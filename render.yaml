@@ -1,0 +1,12 @@
+﻿services:
+  - type: web
+    name: thermal-app-gps-backend
+    env: docker
+    rootDir: backend
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: CORS_ORIGINS
+        value: http://localhost:3000
+      - key: YOLO_DEVICE
+        value: cpu
