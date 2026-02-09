@@ -6,6 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120 \
     EXIFTOOL_PATH=/usr/bin/exiftool \
+    DJI_IRP_PATH=/app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_irp \
+    LD_LIBRARY_PATH=/app/tools/dji-tsdk/utility/bin/linux/release_x64 \
     YOLO_DEVICE=cpu
 
 WORKDIR /app
@@ -14,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     exiftool \
     libgl1 \
     libglib2.0-0 \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
@@ -29,5 +32,16 @@ RUN set -eux; \
     done
 
 COPY . .
+
+RUN set -eux; \
+    if [ -f "/app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_irp" ]; then \
+      chmod +x /app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_irp; \
+    fi; \
+    if [ -f "/app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_irp_omp" ]; then \
+      chmod +x /app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_irp_omp; \
+    fi; \
+    if [ -f "/app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_ircm" ]; then \
+      chmod +x /app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_ircm; \
+    fi
 
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

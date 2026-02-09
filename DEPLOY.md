@@ -35,9 +35,10 @@ After frontend is live:
 3. Save and redeploy backend.
 
 ## Important Notes
-- DJI SDK in this repo is Windows binary (`dji_irp.exe`).
-- On Render (Linux), that binary cannot run.
-- The API still runs and falls back to available thermal modes.
+- This repo now includes DJI IRP binaries for both Windows and Linux.
+- Development on Windows uses `.exe` binaries automatically.
+- Production on Render (Linux) uses `/app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_irp`.
+- If you override `DJI_IRP_PATH`, make sure it matches the OS.
 
 ## Local Run
 - Backend: `uvicorn main:app --reload --host 127.0.0.1 --port 8000`

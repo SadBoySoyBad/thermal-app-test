@@ -59,10 +59,21 @@ EXIFTOOL_DEFAULT_PATHS = [
     str(Path(os.getenv("LOCALAPPDATA", "")) / "Programs" / "ExifTool" / "ExifTool.exe"),
 ]
 
-DJI_IRP_DEFAULT_PATHS = [
-    str(BASE_DIR / "tools" / "dji-tsdk" / "utility" / "bin" / "windows" / "release_x64" / "dji_irp.exe"),
-    str(BASE_DIR / "tools" / "dji-tsdk" / "utility" / "bin" / "windows" / "release_x64" / "dji_irp_omp.exe"),
-]
+DJI_IRP_WINDOWS_X64_DIR = BASE_DIR / "tools" / "dji-tsdk" / "utility" / "bin" / "windows" / "release_x64"
+DJI_IRP_LINUX_X64_DIR = BASE_DIR / "tools" / "dji-tsdk" / "utility" / "bin" / "linux" / "release_x64"
+
+if os.name == "nt":
+    DJI_IRP_DEFAULT_PATHS = [
+        str(DJI_IRP_WINDOWS_X64_DIR / "dji_irp.exe"),
+        str(DJI_IRP_WINDOWS_X64_DIR / "dji_irp_omp.exe"),
+        str(DJI_IRP_LINUX_X64_DIR / "dji_irp"),
+    ]
+else:
+    DJI_IRP_DEFAULT_PATHS = [
+        str(DJI_IRP_LINUX_X64_DIR / "dji_irp"),
+        str(DJI_IRP_LINUX_X64_DIR / "dji_irp_omp"),
+        str(DJI_IRP_WINDOWS_X64_DIR / "dji_irp.exe"),
+    ]
 
 KNOWN_THERMAL_SIZES = [
     (512, 640),
@@ -176,7 +187,7 @@ def _extract_dji_temperature_matrix(
     if not DJI_IRP_PATH:
         DJI_IRP_PATH = resolve_dji_irp_path()
     if not DJI_IRP_PATH:
-        return None, "DJI Thermal SDK (dji_irp.exe) not found."
+        return None, "DJI Thermal SDK binary (dji_irp) not found."
     if os.name != "nt" and DJI_IRP_PATH.lower().endswith(".exe"):
         return None, f"DJI IRP binary is Windows-only and cannot run here: {DJI_IRP_PATH}"
 
@@ -203,8 +214,16 @@ def _extract_dji_temperature_matrix(
         f"{reflection:.3f}",
     ]
 
+    process_env = os.environ.copy()
+    dji_irp_directory = str(Path(DJI_IRP_PATH).resolve().parent)
+    if os.name != "nt":
+        existing_library_path = process_env.get("LD_LIBRARY_PATH", "")
+        process_env["LD_LIBRARY_PATH"] = (
+            f"{dji_irp_directory}:{existing_library_path}" if existing_library_path else dji_irp_directory
+        )
+
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        subprocess.run(cmd, capture_output=True, text=True, check=True, env=process_env)
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or "").strip()
         if not detail:

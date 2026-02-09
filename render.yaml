@@ -10,6 +10,10 @@
         value: cpu
       - key: CORS_ALLOW_ALL
         value: "true"
+      - key: DJI_IRP_PATH
+        value: /app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_irp
+      - key: LD_LIBRARY_PATH
+        value: /app/tools/dji-tsdk/utility/bin/linux/release_x64
 
   - type: web
     name: thermal-app-gps-frontend
