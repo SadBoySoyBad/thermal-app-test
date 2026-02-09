@@ -177,6 +177,8 @@ def _extract_dji_temperature_matrix(
         DJI_IRP_PATH = resolve_dji_irp_path()
     if not DJI_IRP_PATH:
         return None, "DJI Thermal SDK (dji_irp.exe) not found."
+    if os.name != "nt" and DJI_IRP_PATH.lower().endswith(".exe"):
+        return None, f"DJI IRP binary is Windows-only and cannot run here: {DJI_IRP_PATH}"
 
     distance, humidity, emissivity, reflection = _get_dji_measurement_params(image_path)
     output_raw_path = f"{image_path}.dji_measure.float32.raw"
@@ -208,6 +210,10 @@ def _extract_dji_temperature_matrix(
         if not detail:
             detail = "Failed to execute DJI thermal measurement."
         return None, detail
+    except FileNotFoundError:
+        return None, f"DJI IRP binary not found at runtime: {DJI_IRP_PATH}"
+    except OSError as exc:
+        return None, f"DJI IRP cannot execute in this environment: {exc}"
 
     try:
         temperature_values = np.fromfile(output_raw_path, dtype=np.float32)
