@@ -6,7 +6,24 @@
     plan: free
     autoDeploy: true
     envVars:
-      - key: CORS_ORIGINS
-        value: http://localhost:3000
       - key: YOLO_DEVICE
         value: cpu
+      - key: CORS_ALLOW_ALL
+        value: "true"
+
+  - type: web
+    name: thermal-app-gps-frontend
+    env: node
+    rootDir: frontend
+    plan: free
+    autoDeploy: true
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: "20.18.0"
+      - key: NEXT_PUBLIC_BACKEND_URL
+        fromService:
+          type: web
+          name: thermal-app-gps-backend
+          envVarKey: RENDER_EXTERNAL_URL
