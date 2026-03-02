@@ -1,13 +1,17 @@
-﻿"use client";
+"use client";
 
-import { useState } from "react";
+import { useState, type ChangeEvent } from "react";
 import dynamic from "next/dynamic";
 
-// โหลด MapView เฉพาะฝั่ง browser เพื่อลดปัญหา SSR กับ Leaflet
 const MapView = dynamic(() => import("./MapView"), { ssr: false });
+
+type MatchMethod = "inside" | "nearest" | "unknown";
 
 type Detection = {
   bbox: [number, number, number, number];
+  thermal_bbox?: [number, number, number, number];
+  hotspot_confidence?: number | null;
+  hotspot_center?: [number, number] | null;
   max_temp: number | null;
   min_temp: number | null;
   avg_temp: number | null;
@@ -16,40 +20,44 @@ type Detection = {
   avg_raw?: number | null;
   max_point?: [number, number] | null;
   min_point?: [number, number] | null;
+  equipment_class?: string | null;
+  equipment_confidence?: number | null;
+  equipment_bbox?: [number, number, number, number] | null;
+  match_method?: MatchMethod | null;
+  match_distance?: number | null;
+  reference_temp?: number | null;
+  delta_above_reference?: number | null;
+  priority?: string | null;
+  action_required?: string | null;
 };
 
 type ThermalMode = "none" | "absolute" | "relative";
 
 const backendBaseUrl = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 
+function formatNumber(value: number | null | undefined, digits = 1) {
+  return typeof value === "number" ? value.toFixed(digits) : null;
+}
+
 export default function Home() {
-  // พิกัด GPS จากภาพ
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
-
-  // ข้อความสถานะที่แสดงบนหน้าเว็บ
   const [message, setMessage] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
-  const [fileName, setFileName] = useState<string>("No file chosen");
-
-  // ผลลัพธ์จาก backend
+  const [thermalFile, setThermalFile] = useState<File | null>(null);
+  const [rgbFile, setRgbFile] = useState<File | null>(null);
+  const [thermalFileName, setThermalFileName] = useState<string>("No thermal file chosen");
+  const [rgbFileName, setRgbFileName] = useState<string>("No RGB file chosen");
   const [annotatedImage, setAnnotatedImage] = useState<string | null>(null);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [thermalAvailable, setThermalAvailable] = useState<boolean | null>(null);
   const [thermalError, setThermalError] = useState<string>("");
   const [thermalMode, setThermalMode] = useState<ThermalMode | null>(null);
+  const [referenceTemperature, setReferenceTemperature] = useState<number | null>(null);
 
   const degreeCelsius = "\u00B0C";
 
-  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
-    const selectedFile = event.target.files?.[0];
-    if (!selectedFile) return;
-
-    setFileName(selectedFile.name);
-    setMessage("");
-    setLoading(true);
-
-    // รีเซ็ตผลเก่าก่อนเริ่มอัปโหลดใหม่
+  function resetResults() {
     setAnnotatedImage(null);
     setDetections([]);
     setLat(null);
@@ -57,9 +65,36 @@ export default function Home() {
     setThermalAvailable(null);
     setThermalError("");
     setThermalMode(null);
+    setReferenceTemperature(null);
+  }
+
+  function handleThermalFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFile = event.target.files?.[0] ?? null;
+    setThermalFile(selectedFile);
+    setThermalFileName(selectedFile?.name ?? "No thermal file chosen");
+    setMessage("");
+  }
+
+  function handleRgbFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFile = event.target.files?.[0] ?? null;
+    setRgbFile(selectedFile);
+    setRgbFileName(selectedFile?.name ?? "No RGB file chosen");
+    setMessage("");
+  }
+
+  async function handleUpload() {
+    if (!thermalFile || !rgbFile) {
+      setMessage("Please choose both thermal and RGB images.");
+      return;
+    }
+
+    setMessage("");
+    setLoading(true);
+    resetResults();
 
     const uploadFormData = new FormData();
-    uploadFormData.append("file", selectedFile);
+    uploadFormData.append("thermal_file", thermalFile);
+    uploadFormData.append("rgb_file", rgbFile);
 
     try {
       const uploadResponse = await fetch(`${backendBaseUrl}/upload`, {
@@ -67,25 +102,15 @@ export default function Home() {
         body: uploadFormData,
       });
 
-      if (!uploadResponse.ok) {
-        setMessage("Upload failed. Please try again.");
+      const responseData = await uploadResponse.json().catch(() => null);
+      if (!uploadResponse.ok || !responseData?.success) {
+        setMessage(responseData?.detail ?? responseData?.message ?? "Upload failed. Please try again.");
         return;
       }
 
-      const responseData = await uploadResponse.json();
-
-      if (!responseData?.success) {
-        setMessage(responseData?.message ?? "No GPS data found in image.");
-        setLat(null);
-        setLon(null);
-        setThermalAvailable(null);
-        setThermalError("");
-        setThermalMode(null);
-        return;
-      }
-
-      setLat(responseData.latitude);
-      setLon(responseData.longitude);
+      setMessage(typeof responseData.message === "string" ? responseData.message : "");
+      setLat(typeof responseData.latitude === "number" ? responseData.latitude : null);
+      setLon(typeof responseData.longitude === "number" ? responseData.longitude : null);
 
       if (responseData.annotated_image) {
         const annotatedImageSource = String(responseData.annotated_image);
@@ -94,12 +119,20 @@ export default function Home() {
         } else {
           setAnnotatedImage(`${backendBaseUrl}${annotatedImageSource}`);
         }
+      } else {
+        setAnnotatedImage(null);
       }
 
       if (Array.isArray(responseData.detections)) {
         setDetections(responseData.detections as Detection[]);
       } else {
         setDetections([]);
+      }
+
+      if (typeof responseData.reference_temperature === "number") {
+        setReferenceTemperature(responseData.reference_temperature);
+      } else {
+        setReferenceTemperature(null);
       }
 
       if (typeof responseData.thermal_available === "boolean") {
@@ -125,11 +158,7 @@ export default function Home() {
       }
     } catch {
       setMessage("Cannot reach backend. Is it running on port 8000?");
-      setLat(null);
-      setLon(null);
-      setThermalAvailable(null);
-      setThermalError("");
-      setThermalMode(null);
+      resetResults();
     } finally {
       setLoading(false);
     }
@@ -139,40 +168,65 @@ export default function Home() {
     <main className="page">
       <section className="card">
         <header className="hero">
-          <p className="eyebrow">Thermal - GPS - Map</p>
-          <h1>Thermal Image GPS Viewer</h1>
+          <p className="eyebrow">Thermal - RGB - GPS - Map</p>
+          <h1>Thermal Hotspot Equipment Matcher</h1>
           <p className="subtle">
-            Upload a thermal image with GPS metadata to plot its location.
+            Upload the thermal image with GPS metadata and its matching RGB image to identify the hotspot equipment.
           </p>
         </header>
 
-        <div className="uploadRow">
-          <input
-            id="image-file"
-            className="fileInput"
-            type="file"
-            accept="image/*"
-            onChange={handleFileUpload}
-          />
+        <div className="uploadStack">
+          <div className="uploadRow">
+            <span className="uploadLabel">Thermal image</span>
+            <input
+              id="thermal-file"
+              className="fileInput"
+              type="file"
+              accept="image/*"
+              onChange={handleThermalFileChange}
+            />
+            <label htmlFor="thermal-file" className="fileButton">
+              Choose file
+            </label>
+            <span className="fileName">{thermalFileName}</span>
+          </div>
 
-          <label htmlFor="image-file" className="fileButton">
-            Choose file
-          </label>
+          <div className="uploadRow">
+            <span className="uploadLabel">RGB image</span>
+            <input
+              id="rgb-file"
+              className="fileInput"
+              type="file"
+              accept="image/*"
+              onChange={handleRgbFileChange}
+            />
+            <label htmlFor="rgb-file" className="fileButton">
+              Choose file
+            </label>
+            <span className="fileName">{rgbFileName}</span>
+          </div>
 
-          <span className="fileName">{fileName}</span>
+          <button
+            className="analyzeButton"
+            type="button"
+            onClick={handleUpload}
+            disabled={loading || !thermalFile || !rgbFile}
+          >
+            {loading ? "Analyzing..." : "Analyze Pair"}
+          </button>
         </div>
 
-        {loading && <p className="status">Uploading...</p>}
+        {loading && <p className="status">Analyzing thermal and RGB images...</p>}
         {message && <p className="status warning">{message}</p>}
       </section>
 
       {annotatedImage && (
         <section className="card mapCard">
-          <h2 className="mapTitle">Hotspot Detection Result</h2>
+          <h2 className="mapTitle">Thermal Hotspot Result</h2>
 
           <img
             src={annotatedImage}
-            alt="Annotated thermal"
+            alt="Annotated thermal hotspot result"
             style={{
               width: "100%",
               borderRadius: "12px",
@@ -189,6 +243,13 @@ export default function Home() {
             </p>
           )}
 
+          {referenceTemperature !== null && (
+            <p className="subtle">
+              Reference temperature: {referenceTemperature.toFixed(1)} {degreeCelsius} (mean of pixels at or below 28
+              {degreeCelsius})
+            </p>
+          )}
+
           <h3>Detected Hotspots</h3>
 
           {detections.length === 0 ? (
@@ -199,19 +260,59 @@ export default function Home() {
                 <li key={index}>
                   <strong>Hotspot #{index + 1}</strong>
                   <br />
-                  {detection.max_temp !== null &&
-                  detection.min_temp !== null &&
-                  detection.avg_temp !== null ? (
+                  Equipment: {detection.equipment_class ?? "unknown"}
+                  {typeof detection.equipment_confidence === "number"
+                    ? ` (${detection.equipment_confidence.toFixed(2)})`
+                    : ""}
+                  <br />
+                  Match: {detection.match_method ?? "unknown"}
+                  {typeof detection.match_distance === "number" ? `, distance ${detection.match_distance.toFixed(1)} px` : ""}
+                  <br />
+                  {detection.max_temp !== null && detection.min_temp !== null && detection.avg_temp !== null ? (
                     <>
                       Max: {detection.max_temp.toFixed(1)} {degreeCelsius}
                       <br />
                       Min: {detection.min_temp.toFixed(1)} {degreeCelsius}
                       <br />
                       Avg: {detection.avg_temp.toFixed(1)} {degreeCelsius}
+                      <br />
+                      {typeof detection.reference_temp === "number" && (
+                        <>
+                          Reference: {detection.reference_temp.toFixed(1)} {degreeCelsius}
+                          <br />
+                        </>
+                      )}
+                      {typeof detection.delta_above_reference === "number" && (
+                        <>
+                          Max rise above reference: {detection.delta_above_reference.toFixed(1)} {degreeCelsius}
+                          <br />
+                        </>
+                      )}
+                    </>
+                  ) : detection.max_raw !== null &&
+                    detection.max_raw !== undefined &&
+                    detection.min_raw !== null &&
+                    detection.min_raw !== undefined &&
+                    detection.avg_raw !== null &&
+                    detection.avg_raw !== undefined ? (
+                    <>
+                      Max raw: {formatNumber(detection.max_raw)}
+                      <br />
+                      Min raw: {formatNumber(detection.min_raw)}
+                      <br />
+                      Avg raw: {formatNumber(detection.avg_raw)}
+                      <br />
                     </>
                   ) : (
                     <em>Temperature data unavailable</em>
                   )}
+                  {detection.priority && (
+                    <>
+                      Priority: {detection.priority}
+                      <br />
+                    </>
+                  )}
+                  {detection.action_required && <>Action required: {detection.action_required}</>}
                 </li>
               ))}
             </ul>

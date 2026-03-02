@@ -118,12 +118,23 @@ body::after {
   font-size: 15px;
 }
 
-.uploadRow {
+.uploadStack {
   margin-top: 20px;
   display: grid;
-  grid-template-columns: auto 1fr;
+  gap: 14px;
+}
+
+.uploadRow {
+  display: grid;
+  grid-template-columns: 120px auto 1fr;
   gap: 12px 16px;
   align-items: center;
+}
+
+.uploadLabel {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-0);
 }
 
 .fileInput {
@@ -167,6 +178,27 @@ body::after {
   white-space: nowrap;
 }
 
+.analyzeButton {
+  width: fit-content;
+  padding: 11px 20px;
+  border-radius: 999px;
+  border: 1px solid rgba(31, 27, 22, 0.12);
+  background: #1f1b16;
+  color: #fff8ef;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.analyzeButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.analyzeButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .status {
   margin: 12px 0 0;
   font-size: 14px;
@@ -192,6 +224,17 @@ body::after {
   border-radius: 16px;
   overflow: hidden;
   border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+@media (max-width: 640px) {
+  .uploadRow {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .fileName {
+    white-space: normal;
+  }
 }
 
 @keyframes rise {

@@ -1,5 +1,5 @@
 ﻿from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Any, Literal, Optional, Tuple
 import base64
 import io
 import os
@@ -19,12 +19,47 @@ from ultralytics import YOLO
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
-MODEL_PATH = BASE_DIR / "model" / "best.pt"
+DEFAULT_HOTSPOT_MODEL_PATH = BASE_DIR / "model" / "best.pt"
+DEFAULT_EQUIPMENT_MODEL_PATH = BASE_DIR / "model" / "equipment.pt"
+ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
+EQUIPMENT_LABELS = {
+    0: "inverter",
+    1: "transformer",
+    2: "conductor",
+    3: "connector",
+}
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI()
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+
+def _env_float(name: str, default_value: float) -> float:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default_value
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default_value
+
+
+def _env_int(name: str, default_value: int) -> int:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default_value
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default_value
+
+
+def _resolve_model_path(raw_path: str, default_path: Path) -> Path:
+    candidate = Path(raw_path).expanduser() if raw_path.strip() else default_path
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+    return candidate
 
 
 def _load_cors_origins() -> list[str]:
@@ -49,8 +84,30 @@ app.add_middleware(
 )
 
 
-yolo_model = YOLO(str(MODEL_PATH))
 YOLO_DEVICE = os.getenv("YOLO_DEVICE", "cpu")
+HOTSPOT_CONFIDENCE = _env_float("HOTSPOT_CONFIDENCE", 0.2)
+HOTSPOT_IOU = _env_float("HOTSPOT_IOU", 0.5)
+EQUIPMENT_CONFIDENCE = _env_float("EQUIPMENT_CONFIDENCE", 0.2)
+EQUIPMENT_IOU = _env_float("EQUIPMENT_IOU", 0.5)
+THERMAL_CENTER_SHIFT_X = _env_int("THERMAL_CENTER_SHIFT_X", -10)
+THERMAL_CENTER_SHIFT_Y = _env_int("THERMAL_CENTER_SHIFT_Y", -1)
+EQUIPMENT_BBOX_DILATION = _env_int("EQUIPMENT_BBOX_DILATION", 12)
+MATCH_DISTANCE_THRESHOLD = _env_float("MATCH_DISTANCE_THRESHOLD", 40.0)
+REFERENCE_TEMP_MAX_C = _env_float("REFERENCE_TEMP_MAX_C", 28.0)
+HOTSPOT_MODEL_PATH = _resolve_model_path(os.getenv("HOTSPOT_MODEL_PATH", ""), DEFAULT_HOTSPOT_MODEL_PATH)
+EQUIPMENT_MODEL_PATH = _resolve_model_path(os.getenv("EQUIPMENT_MODEL_PATH", ""), DEFAULT_EQUIPMENT_MODEL_PATH)
+
+
+def _load_yolo_model(model_path: Path, required: bool) -> Optional[YOLO]:
+    if not model_path.exists():
+        if required:
+            raise FileNotFoundError(f"YOLO model not found: {model_path}")
+        return None
+    return YOLO(str(model_path))
+
+
+hotspot_model = _load_yolo_model(HOTSPOT_MODEL_PATH, required=True)
+equipment_model = _load_yolo_model(EQUIPMENT_MODEL_PATH, required=False)
 
 EXIFTOOL_DEFAULT_PATHS = [
     r"C:\exiftool\exiftool.exe",
@@ -392,20 +449,260 @@ def _safe_bbox(x1: int, y1: int, x2: int, y2: int, img_w: int, img_h: int):
     return x1, y1, x2, y2
 
 
+def _normalize_upload_suffix(filename: str) -> str:
+    file_suffix = Path(filename or "").suffix.lower()
+    if file_suffix in ALLOWED_IMAGE_SUFFIXES:
+        return file_suffix
+    return ".jpg"
+
+
+def _save_upload_file(upload: UploadFile, file_id: str, label: str, payload: bytes) -> Tuple[str, Path]:
+    file_suffix = _normalize_upload_suffix(upload.filename or "")
+    upload_filename = f"{file_id}_{label}{file_suffix}"
+    upload_path = UPLOAD_DIR / upload_filename
+    with upload_path.open("wb") as uploaded_file:
+        uploaded_file.write(payload)
+    return upload_filename, upload_path
+
+
+def _run_yolo_detection(model: YOLO, image_path: Path, conf: float, iou: float) -> list[dict[str, Any]]:
+    model_results = model(
+        str(image_path),
+        conf=conf,
+        iou=iou,
+        device=YOLO_DEVICE,
+    )
+
+    detections: list[dict[str, Any]] = []
+    if not model_results or model_results[0].boxes is None:
+        return detections
+
+    result = model_results[0]
+    boxes = result.boxes.xyxy.cpu().numpy()
+    confidences = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else np.ones(len(boxes))
+    class_ids = (
+        result.boxes.cls.cpu().numpy().astype(int)
+        if result.boxes.cls is not None
+        else np.zeros(len(boxes), dtype=int)
+    )
+
+    for index, box in enumerate(boxes):
+        detections.append(
+            {
+                "bbox": [float(box[0]), float(box[1]), float(box[2]), float(box[3])],
+                "confidence": float(confidences[index]),
+                "class_id": int(class_ids[index]),
+            }
+        )
+
+    return detections
+
+
+def _centered_thermal_offset(
+    rgb_width: int,
+    rgb_height: int,
+    thermal_width: int,
+    thermal_height: int,
+) -> Tuple[int, int]:
+    offset_x = int(np.floor((rgb_width - thermal_width) / 2.0)) + THERMAL_CENTER_SHIFT_X
+    offset_y = int(np.floor((rgb_height - thermal_height) / 2.0)) + THERMAL_CENTER_SHIFT_Y
+    return offset_x, offset_y
+
+
+def _project_thermal_point_to_rgb(
+    point_x: float,
+    point_y: float,
+    thermal_width: int,
+    thermal_height: int,
+    rgb_width: int,
+    rgb_height: int,
+) -> Tuple[int, int]:
+    offset_x, offset_y = _centered_thermal_offset(rgb_width, rgb_height, thermal_width, thermal_height)
+    rgb_point_x = int(round(point_x + offset_x))
+    rgb_point_y = int(round(point_y + offset_y))
+    rgb_point_x = max(0, min(rgb_point_x, rgb_width - 1))
+    rgb_point_y = max(0, min(rgb_point_y, rgb_height - 1))
+    return rgb_point_x, rgb_point_y
+
+
+def _project_thermal_bbox_to_rgb(
+    bbox: Tuple[int, int, int, int],
+    thermal_width: int,
+    thermal_height: int,
+    rgb_width: int,
+    rgb_height: int,
+) -> Tuple[int, int, int, int]:
+    x1, y1 = _project_thermal_point_to_rgb(
+        bbox[0],
+        bbox[1],
+        thermal_width,
+        thermal_height,
+        rgb_width,
+        rgb_height,
+    )
+    x2, y2 = _project_thermal_point_to_rgb(
+        bbox[2],
+        bbox[3],
+        thermal_width,
+        thermal_height,
+        rgb_width,
+        rgb_height,
+    )
+    return _safe_bbox(x1, y1, x2, y2, rgb_width, rgb_height)
+
+
+def _dilate_bbox(
+    bbox: Tuple[int, int, int, int],
+    dilation: int,
+    image_width: int,
+    image_height: int,
+) -> Tuple[int, int, int, int]:
+    return _safe_bbox(
+        bbox[0] - dilation,
+        bbox[1] - dilation,
+        bbox[2] + dilation,
+        bbox[3] + dilation,
+        image_width,
+        image_height,
+    )
+
+
+def _bbox_contains_point(bbox: Tuple[int, int, int, int], point_x: int, point_y: int) -> bool:
+    return bbox[0] <= point_x <= bbox[2] and bbox[1] <= point_y <= bbox[3]
+
+
+def _distance_to_bbox(bbox: Tuple[int, int, int, int], point_x: int, point_y: int) -> float:
+    delta_x = max(bbox[0] - point_x, 0, point_x - bbox[2])
+    delta_y = max(bbox[1] - point_y, 0, point_y - bbox[3])
+    return float(np.hypot(delta_x, delta_y))
+
+
+def _equipment_label_for_class(class_id: int) -> str:
+    return EQUIPMENT_LABELS.get(class_id, f"class_{class_id}")
+
+
+def _match_equipment(
+    hotspot_center: Tuple[int, int],
+    equipments: list[dict[str, Any]],
+    image_width: int,
+    image_height: int,
+) -> dict[str, Any]:
+    if not equipments:
+        return {
+            "equipment_class": "unknown",
+            "equipment_confidence": None,
+            "equipment_bbox": None,
+            "match_method": "unknown",
+            "match_distance": None,
+        }
+
+    scored_candidates = []
+    for equipment in equipments:
+        bbox = equipment["bbox"]
+        dilated_bbox = _dilate_bbox(bbox, EQUIPMENT_BBOX_DILATION, image_width, image_height)
+        contains_center = _bbox_contains_point(dilated_bbox, hotspot_center[0], hotspot_center[1])
+        distance = _distance_to_bbox(dilated_bbox, hotspot_center[0], hotspot_center[1])
+        area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+        scored_candidates.append(
+            (
+                0 if contains_center else 1,
+                distance,
+                -float(equipment["confidence"]),
+                area,
+                equipment,
+            )
+        )
+
+    scored_candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    _, distance, _, _, best_equipment = scored_candidates[0]
+
+    if _bbox_contains_point(
+        _dilate_bbox(best_equipment["bbox"], EQUIPMENT_BBOX_DILATION, image_width, image_height),
+        hotspot_center[0],
+        hotspot_center[1],
+    ):
+        match_method = "inside"
+    elif distance <= MATCH_DISTANCE_THRESHOLD:
+        match_method = "nearest"
+    else:
+        return {
+            "equipment_class": "unknown",
+            "equipment_confidence": None,
+            "equipment_bbox": None,
+            "match_method": "unknown",
+            "match_distance": round(distance, 2),
+        }
+
+    return {
+        "equipment_class": best_equipment["label"],
+        "equipment_confidence": best_equipment["confidence"],
+        "equipment_bbox": list(best_equipment["bbox"]),
+        "match_method": match_method,
+        "match_distance": round(distance, 2),
+    }
+
+
+def _compute_reference_temperature(thermal_matrix: np.ndarray) -> Optional[float]:
+    finite_values = thermal_matrix[np.isfinite(thermal_matrix)]
+    if finite_values.size == 0:
+        return None
+    reference_pixels = finite_values[finite_values <= REFERENCE_TEMP_MAX_C]
+    if reference_pixels.size == 0:
+        return None
+    return float(reference_pixels.mean())
+
+
+def _classify_priority(delta_above_reference: float) -> Tuple[str, str]:
+    if delta_above_reference > 40.0:
+        return "Priority 1", "Immediate repair"
+    if delta_above_reference >= 21.0:
+        return "Priority 2", "Schedule ASAP"
+    if delta_above_reference >= 11.0:
+        return "Priority 3", "Plan repair"
+    if delta_above_reference >= 1.0:
+        return "Priority 4", "Monitor"
+    return "Normal", "No action required"
+
+
 @app.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(
+    thermal_file: Optional[UploadFile] = File(None),
+    rgb_file: Optional[UploadFile] = File(None),
+    file: Optional[UploadFile] = File(None),
+):
+    if thermal_file is None and file is not None:
+        thermal_file = file
+
+    if thermal_file is None:
+        return {"success": False, "message": "Thermal image is required."}
+
+    if rgb_file is None:
+        return {"success": False, "message": "RGB image is required to identify equipment."}
+
+    if equipment_model is None:
+        return {
+            "success": False,
+            "message": f"Equipment model not found at {EQUIPMENT_MODEL_PATH}. Set EQUIPMENT_MODEL_PATH first.",
+        }
+
     file_id = uuid.uuid4().hex
-    file_suffix = Path(file.filename or "").suffix.lower()
-    if file_suffix not in {".jpg", ".jpeg", ".tif", ".tiff", ".png"}:
-        file_suffix = ".jpg"
+    thermal_bytes = await thermal_file.read()
+    rgb_bytes = await rgb_file.read()
 
-    uploaded_image_bytes = await file.read()
-    uploaded_image_filename = f"{file_id}{file_suffix}"
-    uploaded_image_path = UPLOAD_DIR / uploaded_image_filename
-    with uploaded_image_path.open("wb") as uploaded_file:
-        uploaded_file.write(uploaded_image_bytes)
+    thermal_uploaded_image_filename, thermal_uploaded_image_path = _save_upload_file(
+        thermal_file,
+        file_id,
+        "thermal",
+        thermal_bytes,
+    )
+    rgb_uploaded_image_filename, rgb_uploaded_image_path = _save_upload_file(
+        rgb_file,
+        file_id,
+        "rgb",
+        rgb_bytes,
+    )
 
-    image_stream = io.BytesIO(uploaded_image_bytes)
+    image_stream = io.BytesIO(thermal_bytes)
     tags = exifread.process_file(image_stream)
 
     lat = tags.get("GPS GPSLatitude")
@@ -421,57 +718,107 @@ async def upload_image(file: UploadFile = File(...)):
         latitude = dms_to_decimal(lat, lat_ref.values)
         longitude = dms_to_decimal(lon, lon_ref.values)
 
-    model_results = yolo_model(
-        str(uploaded_image_path),
-        conf=0.2,
-        iou=0.5,
-        device=YOLO_DEVICE,
+    with Image.open(thermal_uploaded_image_path) as thermal_source_image:
+        thermal_source_image = thermal_source_image.convert("RGB")
+        thermal_image_width, thermal_image_height = thermal_source_image.size
+        annotated_image = thermal_source_image.copy()
+
+    with Image.open(rgb_uploaded_image_path) as rgb_source_image:
+        rgb_source_image = rgb_source_image.convert("RGB")
+        rgb_image_width, rgb_image_height = rgb_source_image.size
+    draw = ImageDraw.Draw(annotated_image)
+
+    hotspot_predictions = _run_yolo_detection(
+        hotspot_model,
+        thermal_uploaded_image_path,
+        HOTSPOT_CONFIDENCE,
+        HOTSPOT_IOU,
+    )
+    equipment_predictions = _run_yolo_detection(
+        equipment_model,
+        rgb_uploaded_image_path,
+        EQUIPMENT_CONFIDENCE,
+        EQUIPMENT_IOU,
     )
 
-    detection_boxes = []
-    if model_results and model_results[0].boxes is not None:
-        detection_boxes = model_results[0].boxes.xyxy.cpu().numpy()
-
-    with Image.open(uploaded_image_path) as source_image:
-        annotated_image = source_image.convert("RGB")
-    draw = ImageDraw.Draw(annotated_image)
-    image_width, image_height = annotated_image.size
-
     thermal_matrix, thermal_error, thermal_mode = extract_thermal_matrix(
-        str(uploaded_image_path),
-        expected_width=image_width,
-        expected_height=image_height,
+        str(thermal_uploaded_image_path),
+        expected_width=thermal_image_width,
+        expected_height=thermal_image_height,
     )
 
     thermal_analysis_matrix = None
     has_absolute_temperature = False
     thermal_height, thermal_width = 0, 0
+    reference_temperature = None
     if thermal_matrix is not None:
+        finite_values = thermal_matrix[np.isfinite(thermal_matrix)]
         if thermal_mode == "absolute":
-            if float(np.nanmax(thermal_matrix)) > 1000.0:
+            if finite_values.size > 0 and float(finite_values.max()) > 1000.0:
                 thermal_analysis_matrix = thermal_matrix * 0.04 - 273.15
             else:
                 thermal_analysis_matrix = thermal_matrix
             has_absolute_temperature = True
+            reference_temperature = _compute_reference_temperature(thermal_analysis_matrix)
         else:
             thermal_analysis_matrix = thermal_matrix
         thermal_height, thermal_width = thermal_analysis_matrix.shape
 
+    equipments: list[dict[str, Any]] = []
+    for equipment_prediction in equipment_predictions:
+        equipment_box = tuple(
+            _safe_bbox(
+                int(round(equipment_prediction["bbox"][0])),
+                int(round(equipment_prediction["bbox"][1])),
+                int(round(equipment_prediction["bbox"][2])),
+                int(round(equipment_prediction["bbox"][3])),
+                rgb_image_width,
+                rgb_image_height,
+            )
+        )
+        equipment_label = _equipment_label_for_class(equipment_prediction["class_id"])
+        equipment = {
+            "bbox": equipment_box,
+            "class_id": equipment_prediction["class_id"],
+            "confidence": round(float(equipment_prediction["confidence"]), 4),
+            "label": equipment_label,
+        }
+        equipments.append(equipment)
+
     detections = []
 
-    for detection_box in detection_boxes:
-        box_x1, box_y1, box_x2, box_y2 = map(int, detection_box)
-        box_x1, box_y1, box_x2, box_y2 = _safe_bbox(
-            box_x1,
-            box_y1,
-            box_x2,
-            box_y2,
-            image_width,
-            image_height,
+    for hotspot_index, hotspot_prediction in enumerate(hotspot_predictions, start=1):
+        thermal_box = tuple(
+            _safe_bbox(
+                int(round(hotspot_prediction["bbox"][0])),
+                int(round(hotspot_prediction["bbox"][1])),
+                int(round(hotspot_prediction["bbox"][2])),
+                int(round(hotspot_prediction["bbox"][3])),
+                thermal_image_width,
+                thermal_image_height,
+            )
+        )
+        rgb_box = _project_thermal_bbox_to_rgb(
+            thermal_box,
+            thermal_image_width,
+            thermal_image_height,
+            rgb_image_width,
+            rgb_image_height,
+        )
+        hotspot_center = _project_thermal_point_to_rgb(
+            (thermal_box[0] + thermal_box[2]) / 2.0,
+            (thermal_box[1] + thermal_box[3]) / 2.0,
+            thermal_image_width,
+            thermal_image_height,
+            rgb_image_width,
+            rgb_image_height,
         )
 
         detection = {
-            "bbox": [box_x1, box_y1, box_x2, box_y2],
+            "bbox": list(rgb_box),
+            "thermal_bbox": list(thermal_box),
+            "hotspot_confidence": round(float(hotspot_prediction["confidence"]), 4),
+            "hotspot_center": list(hotspot_center),
             "max_temp": None,
             "min_temp": None,
             "avg_temp": None,
@@ -480,15 +827,19 @@ async def upload_image(file: UploadFile = File(...)):
             "max_raw": None,
             "min_raw": None,
             "avg_raw": None,
+            "reference_temp": reference_temperature,
+            "delta_above_reference": None,
+            "priority": None,
+            "action_required": None,
         }
 
-        draw.rectangle([box_x1, box_y1, box_x2, box_y2], outline="orange", width=3)
+        draw.rectangle(thermal_box, outline="orange", width=3)
 
         if thermal_analysis_matrix is not None:
-            thermal_x1 = int(np.floor(box_x1 * thermal_width / image_width))
-            thermal_x2 = int(np.ceil(box_x2 * thermal_width / image_width))
-            thermal_y1 = int(np.floor(box_y1 * thermal_height / image_height))
-            thermal_y2 = int(np.ceil(box_y2 * thermal_height / image_height))
+            thermal_x1 = int(np.floor(thermal_box[0] * thermal_width / thermal_image_width))
+            thermal_x2 = int(np.ceil(thermal_box[2] * thermal_width / thermal_image_width))
+            thermal_y1 = int(np.floor(thermal_box[1] * thermal_height / thermal_image_height))
+            thermal_y2 = int(np.ceil(thermal_box[3] * thermal_height / thermal_image_height))
 
             thermal_x1 = max(0, min(thermal_x1, thermal_width - 1))
             thermal_y1 = max(0, min(thermal_y1, thermal_height - 1))
@@ -496,36 +847,52 @@ async def upload_image(file: UploadFile = File(...)):
             thermal_y2 = max(thermal_y1 + 1, min(thermal_y2, thermal_height))
 
             thermal_region = thermal_analysis_matrix[thermal_y1:thermal_y2, thermal_x1:thermal_x2]
-            if thermal_region.size > 0:
-                max_value = float(thermal_region.max())
-                min_value = float(thermal_region.min())
-                avg_value = float(thermal_region.mean())
+            finite_region = thermal_region[np.isfinite(thermal_region)]
+            if finite_region.size > 0:
+                max_value = float(np.nanmax(thermal_region))
+                min_value = float(np.nanmin(thermal_region))
+                avg_value = float(np.nanmean(thermal_region))
 
-                max_position = np.unravel_index(thermal_region.argmax(), thermal_region.shape)
-                min_position = np.unravel_index(thermal_region.argmin(), thermal_region.shape)
+                max_position = np.unravel_index(int(np.nanargmax(thermal_region)), thermal_region.shape)
+                min_position = np.unravel_index(int(np.nanargmin(thermal_region)), thermal_region.shape)
 
-                max_point_x = int((thermal_x1 + max_position[1]) * image_width / thermal_width)
-                max_point_y = int((thermal_y1 + max_position[0]) * image_height / thermal_height)
-                min_point_x = int((thermal_x1 + min_position[1]) * image_width / thermal_width)
-                min_point_y = int((thermal_y1 + min_position[0]) * image_height / thermal_height)
+                max_point_thermal_x = int((thermal_x1 + max_position[1]) * thermal_image_width / thermal_width)
+                max_point_thermal_y = int((thermal_y1 + max_position[0]) * thermal_image_height / thermal_height)
+                min_point_thermal_x = int((thermal_x1 + min_position[1]) * thermal_image_width / thermal_width)
+                min_point_thermal_y = int((thermal_y1 + min_position[0]) * thermal_image_height / thermal_height)
 
-                draw.ellipse([max_point_x - 4, max_point_y - 4, max_point_x + 4, max_point_y + 4], fill="red")
-                draw.ellipse([min_point_x - 4, min_point_y - 4, min_point_x + 4, min_point_y + 4], fill="blue")
-                detection["max_point"] = [max_point_x, max_point_y]
-                detection["min_point"] = [min_point_x, min_point_y]
+                draw.ellipse(
+                    [max_point_thermal_x - 4, max_point_thermal_y - 4, max_point_thermal_x + 4, max_point_thermal_y + 4],
+                    fill="red",
+                )
+                draw.ellipse(
+                    [min_point_thermal_x - 4, min_point_thermal_y - 4, min_point_thermal_x + 4, min_point_thermal_y + 4],
+                    fill="blue",
+                )
+                detection["max_point"] = [max_point_thermal_x, max_point_thermal_y]
+                detection["min_point"] = [min_point_thermal_x, min_point_thermal_y]
+
                 if has_absolute_temperature:
                     draw.text(
-                        (box_x1, max(0, box_y1 - 15)),
+                        (thermal_box[0], max(0, thermal_box[1] - 15)),
                         f"max {max_value:.1f}C min {min_value:.1f}C avg {avg_value:.1f}C",
                         fill="white",
                     )
                     detection["max_temp"] = max_value
                     detection["min_temp"] = min_value
                     detection["avg_temp"] = avg_value
+                    if reference_temperature is not None:
+                        delta_above_reference = max_value - reference_temperature
+                        priority, action_required = _classify_priority(delta_above_reference)
+                        detection["delta_above_reference"] = delta_above_reference
+                        detection["priority"] = priority
+                        detection["action_required"] = action_required
                 else:
                     detection["max_raw"] = max_value
                     detection["min_raw"] = min_value
                     detection["avg_raw"] = avg_value
+
+        detection.update(_match_equipment(hotspot_center, equipments, rgb_image_width, rgb_image_height))
 
         detections.append(detection)
 
@@ -536,7 +903,8 @@ async def upload_image(file: UploadFile = File(...)):
 
     response = {
         "success": True,
-        "uploaded_image": f"/uploads/{uploaded_image_filename}",
+        "uploaded_image": f"/uploads/{thermal_uploaded_image_filename}",
+        "uploaded_rgb_image": f"/uploads/{rgb_uploaded_image_filename}",
         "annotated_image": annotated_image_data_url,
         "detections": detections,
         "has_gps": has_gps,
@@ -544,12 +912,13 @@ async def upload_image(file: UploadFile = File(...)):
         "thermal_available": has_absolute_temperature,
         "thermal_mode": thermal_mode,
         "thermal_error": thermal_error,
+        "reference_temperature": reference_temperature,
     }
 
     if has_gps:
         response["latitude"] = latitude
         response["longitude"] = longitude
     else:
-        response["message"] = "No GPS data found in image"
+        response["message"] = "No GPS data found in thermal image"
 
     return response
