@@ -166,13 +166,6 @@ export default function Home() {
         {message && <p className="status warning">{message}</p>}
       </section>
 
-      {lat !== null && lon !== null && (
-        <section className="card mapCard">
-          <h2 className="mapTitle">Detected Location</h2>
-          <MapView lat={lat} lon={lon} />
-        </section>
-      )}
-
       {annotatedImage && (
         <section className="card mapCard">
           <h2 className="mapTitle">Hotspot Detection Result</h2>
@@ -223,6 +216,13 @@ export default function Home() {
               ))}
             </ul>
           )}
+        </section>
+      )}
+
+      {lat !== null && lon !== null && (
+        <section className="card mapCard">
+          <h2 className="mapTitle">Detected Location</h2>
+          <MapView lat={lat} lon={lon} />
         </section>
       )}
     </main>
