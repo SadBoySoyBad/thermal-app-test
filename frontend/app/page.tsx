@@ -43,6 +43,8 @@ export default function Home() {
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
   const [message, setMessage] = useState<string>("");
+  const [progressMessage, setProgressMessage] = useState<string>("");
+  const [requestId, setRequestId] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [thermalFile, setThermalFile] = useState<File | null>(null);
   const [rgbFile, setRgbFile] = useState<File | null>(null);
@@ -66,6 +68,7 @@ export default function Home() {
     setThermalError("");
     setThermalMode(null);
     setReferenceTemperature(null);
+    setRequestId("");
   }
 
   function handleThermalFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -89,12 +92,27 @@ export default function Home() {
     }
 
     setMessage("");
+    setProgressMessage("Uploading files to backend...");
     setLoading(true);
     resetResults();
 
     const uploadFormData = new FormData();
     uploadFormData.append("thermal_file", thermalFile);
     uploadFormData.append("rgb_file", rgbFile);
+
+    const progressSteps = [
+      "Uploading files to backend...",
+      "Backend received files. Running thermal hotspot model...",
+      "Running RGB equipment model...",
+      "Extracting thermal temperature data...",
+      "Matching hotspot with equipment and preparing result...",
+    ];
+    let progressIndex = 0;
+    setProgressMessage(progressSteps[progressIndex]);
+    const progressTimer = window.setInterval(() => {
+      progressIndex = Math.min(progressIndex + 1, progressSteps.length - 1);
+      setProgressMessage(progressSteps[progressIndex]);
+    }, 3500);
 
     try {
       const uploadResponse = await fetch(`${backendBaseUrl}/upload`, {
@@ -104,11 +122,29 @@ export default function Home() {
 
       const responseData = await uploadResponse.json().catch(() => null);
       if (!uploadResponse.ok || !responseData?.success) {
-        setMessage(responseData?.detail ?? responseData?.message ?? "Upload failed. Please try again.");
+        const responseRequestId =
+          typeof responseData?.request_id === "string" && responseData.request_id.trim()
+            ? responseData.request_id
+            : "";
+        setRequestId(responseRequestId);
+
+        if (uploadResponse.status === 502) {
+          setMessage(
+            responseRequestId
+              ? `Backend returned 502 while processing the upload. Check backend logs for request ${responseRequestId}.`
+              : "Backend returned 502 while processing the upload. Check Render backend logs.",
+          );
+        } else {
+          const fallbackMessage = uploadResponse.ok
+            ? "Upload failed. Please try again."
+            : `Backend returned HTTP ${uploadResponse.status}.`;
+          setMessage(responseData?.detail ?? responseData?.message ?? fallbackMessage);
+        }
         return;
       }
 
       setMessage(typeof responseData.message === "string" ? responseData.message : "");
+      setRequestId(typeof responseData.request_id === "string" ? responseData.request_id : "");
       setLat(typeof responseData.latitude === "number" ? responseData.latitude : null);
       setLon(typeof responseData.longitude === "number" ? responseData.longitude : null);
 
@@ -157,9 +193,11 @@ export default function Home() {
         setThermalError("");
       }
     } catch {
-      setMessage("Cannot reach backend. Is it running on port 8000?");
+      setMessage("Cannot reach backend. The request did not complete.");
       resetResults();
     } finally {
+      window.clearInterval(progressTimer);
+      setProgressMessage("");
       setLoading(false);
     }
   }
@@ -217,7 +255,9 @@ export default function Home() {
         </div>
 
         {loading && <p className="status">Analyzing thermal and RGB images...</p>}
+        {loading && progressMessage && <p className="status progress">{progressMessage}</p>}
         {message && <p className="status warning">{message}</p>}
+        {!loading && requestId && <p className="status subtleStatus">Request ID: {requestId}</p>}
       </section>
 
       {annotatedImage && (

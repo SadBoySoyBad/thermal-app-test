@@ -209,6 +209,15 @@ body::after {
   color: #c14b1b;
 }
 
+.status.progress {
+  color: #2f5d96;
+}
+
+.status.subtleStatus {
+  color: var(--text-1);
+  font-size: 13px;
+}
+
 .mapCard {
   padding: 20px;
 }
