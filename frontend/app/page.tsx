@@ -39,6 +39,19 @@ function formatNumber(value: number | null | undefined, digits = 1) {
   return typeof value === "number" ? value.toFixed(digits) : null;
 }
 
+function getResponseRequestId(responseData: unknown, headerRequestId: string) {
+  if (
+    typeof responseData === "object" &&
+    responseData !== null &&
+    "request_id" in responseData &&
+    typeof responseData.request_id === "string" &&
+    responseData.request_id.trim()
+  ) {
+    return responseData.request_id;
+  }
+  return headerRequestId;
+}
+
 export default function Home() {
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
@@ -92,64 +105,91 @@ export default function Home() {
     }
 
     setMessage("");
-    setProgressMessage("Uploading files to backend...");
+    setProgressMessage("Uploading thermal image...");
     setLoading(true);
     resetResults();
 
-    const uploadFormData = new FormData();
-    uploadFormData.append("thermal_file", thermalFile);
-    uploadFormData.append("rgb_file", rgbFile);
-
-    const progressSteps = [
-      "Uploading files to backend...",
-      "Waiting for backend to accept the upload...",
-      "Backend is still processing the request...",
-      "Still waiting for backend response. Check Render logs if this takes too long...",
-      "Processing is taking longer than usual...",
-    ];
-    let progressIndex = 0;
-    setProgressMessage(progressSteps[progressIndex]);
-    const progressTimer = window.setInterval(() => {
-      progressIndex = Math.min(progressIndex + 1, progressSteps.length - 1);
-      setProgressMessage(progressSteps[progressIndex]);
-    }, 3500);
-
     try {
-      const uploadResponse = await fetch(`${backendBaseUrl}/upload`, {
+      const uploadSingleFile = async (file: File, kind: "thermal" | "rgb", existingFileId?: string) => {
+        const params = new URLSearchParams({ kind });
+        if (existingFileId) {
+          params.set("file_id", existingFileId);
+        }
+
+        const uploadResponse = await fetch(`${backendBaseUrl}/upload-file?${params.toString()}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": file.type || "application/octet-stream",
+            "x-file-name": file.name,
+          },
+          body: file,
+        });
+
+        const responseData = await uploadResponse.json().catch(() => null);
+        const headerRequestId = uploadResponse.headers.get("x-request-id") ?? "";
+        const responseRequestId = getResponseRequestId(responseData, headerRequestId);
+
+        if (!uploadResponse.ok || !responseData?.success) {
+          const fallbackMessage = uploadResponse.ok
+            ? `Failed to upload ${kind} image.`
+            : `Backend returned HTTP ${uploadResponse.status} while uploading ${kind} image.`;
+          throw {
+            requestId: responseRequestId,
+            message:
+              typeof responseData?.message === "string" && responseData.message.trim()
+                ? responseData.message
+                : fallbackMessage,
+          };
+        }
+
+        return {
+          fileId: typeof responseData.file_id === "string" ? responseData.file_id : existingFileId ?? "",
+          requestId: responseRequestId,
+        };
+      };
+
+      const thermalUpload = await uploadSingleFile(thermalFile, "thermal");
+      setRequestId(thermalUpload.requestId);
+
+      setProgressMessage("Uploading RGB image...");
+      const rgbUpload = await uploadSingleFile(rgbFile, "rgb", thermalUpload.fileId);
+      setRequestId(rgbUpload.requestId);
+
+      setProgressMessage("Running hotspot and equipment analysis...");
+      const analyzeResponse = await fetch(`${backendBaseUrl}/analyze`, {
         method: "POST",
-        body: uploadFormData,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ file_id: rgbUpload.fileId }),
       });
 
-      const responseData = await uploadResponse.json().catch(() => null);
-      const headerRequestId = uploadResponse.headers.get("x-request-id") ?? "";
-      if (!uploadResponse.ok || !responseData?.success) {
-        const responseRequestId =
-          typeof responseData?.request_id === "string" && responseData.request_id.trim()
-            ? responseData.request_id
-            : headerRequestId;
+      const responseData = await analyzeResponse.json().catch(() => null);
+      const headerRequestId = analyzeResponse.headers.get("x-request-id") ?? "";
+      const responseRequestId = getResponseRequestId(responseData, headerRequestId);
+      if (!analyzeResponse.ok || !responseData?.success) {
         setRequestId(responseRequestId);
-
-        if (uploadResponse.status === 502) {
+        if (analyzeResponse.status === 502) {
           setMessage(
             responseRequestId
-              ? `Backend returned 502 while processing the upload. Check backend logs for request ${responseRequestId}.`
-              : "Backend returned 502 while processing the upload. Check Render backend logs.",
+              ? `Backend returned 502 while analyzing request ${responseRequestId}.`
+              : "Backend returned 502 while analyzing the uploaded images.",
           );
         } else {
-          const fallbackMessage = uploadResponse.ok
-            ? "Upload failed. Please try again."
-            : `Backend returned HTTP ${uploadResponse.status}.`;
-          setMessage(responseData?.detail ?? responseData?.message ?? fallbackMessage);
+          const fallbackMessage = analyzeResponse.ok
+            ? "Analysis failed. Please try again."
+            : `Backend returned HTTP ${analyzeResponse.status}.`;
+          setMessage(
+            typeof responseData?.message === "string" && responseData.message.trim()
+              ? responseData.message
+              : fallbackMessage,
+          );
         }
         return;
       }
 
       setMessage(typeof responseData.message === "string" ? responseData.message : "");
-      setRequestId(
-        typeof responseData.request_id === "string" && responseData.request_id.trim()
-          ? responseData.request_id
-          : headerRequestId,
-      );
+      setRequestId(responseRequestId);
       setLat(typeof responseData.latitude === "number" ? responseData.latitude : null);
       setLon(typeof responseData.longitude === "number" ? responseData.longitude : null);
 
@@ -197,11 +237,16 @@ export default function Home() {
       } else {
         setThermalError("");
       }
-    } catch {
-      setMessage("Cannot reach backend. The request did not complete.");
-      resetResults();
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "message" in error) {
+        const requestIdFromError =
+          "requestId" in error && typeof error.requestId === "string" ? error.requestId : "";
+        setRequestId(requestIdFromError);
+        setMessage(typeof error.message === "string" ? error.message : "Cannot reach backend. The request did not complete.");
+      } else {
+        setMessage("Cannot reach backend. The request did not complete.");
+      }
     } finally {
-      window.clearInterval(progressTimer);
       setProgressMessage("");
       setLoading(false);
     }
@@ -259,8 +304,8 @@ export default function Home() {
           </button>
         </div>
 
-        {loading && <p className="status">Analyzing thermal and RGB images...</p>}
-        {loading && <p className="status subtleStatus">The progress text below is approximate until the backend responds.</p>}
+        {loading && <p className="status">Uploading files and analyzing the image pair...</p>}
+        {loading && <p className="status subtleStatus">The current step below reflects the active backend request.</p>}
         {loading && progressMessage && <p className="status progress">{progressMessage}</p>}
         {message && <p className="status warning">{message}</p>}
         {!loading && requestId && <p className="status subtleStatus">Request ID: {requestId}</p>}
