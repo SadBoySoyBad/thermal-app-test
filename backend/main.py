@@ -12,7 +12,7 @@ import uuid
 
 import exifread
 import numpy as np
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw
@@ -41,6 +41,38 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("thermal_app")
+
+
+@app.middleware("http")
+async def log_request_lifecycle(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:8]
+    request.state.request_id = request_id
+    started_at = time.perf_counter()
+    logger.info(
+        "[%s] http_request_started method=%s path=%s content_length=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        request.headers.get("content-length"),
+    )
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        logger.exception("[%s] http_request_failed elapsed_seconds=%s", request_id, elapsed_seconds)
+        raise
+
+    response.headers["x-request-id"] = request_id
+    elapsed_seconds = round(time.perf_counter() - started_at, 2)
+    logger.info(
+        "[%s] http_request_finished method=%s path=%s status=%s elapsed_seconds=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_seconds,
+    )
+    return response
 
 
 def _env_float(name: str, default_value: float) -> float:
@@ -688,11 +720,12 @@ def _log_upload_step(request_id: str, step: str, **details: Any) -> None:
 
 @app.post("/upload")
 async def upload_image(
+    request: Request,
     thermal_file: Optional[UploadFile] = File(None),
     rgb_file: Optional[UploadFile] = File(None),
     file: Optional[UploadFile] = File(None),
 ):
-    request_id = uuid.uuid4().hex[:8]
+    request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:8])
     started_at = time.perf_counter()
 
     try:

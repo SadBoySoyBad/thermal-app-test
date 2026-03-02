@@ -102,10 +102,10 @@ export default function Home() {
 
     const progressSteps = [
       "Uploading files to backend...",
-      "Backend received files. Running thermal hotspot model...",
-      "Running RGB equipment model...",
-      "Extracting thermal temperature data...",
-      "Matching hotspot with equipment and preparing result...",
+      "Waiting for backend to accept the upload...",
+      "Backend is still processing the request...",
+      "Still waiting for backend response. Check Render logs if this takes too long...",
+      "Processing is taking longer than usual...",
     ];
     let progressIndex = 0;
     setProgressMessage(progressSteps[progressIndex]);
@@ -121,11 +121,12 @@ export default function Home() {
       });
 
       const responseData = await uploadResponse.json().catch(() => null);
+      const headerRequestId = uploadResponse.headers.get("x-request-id") ?? "";
       if (!uploadResponse.ok || !responseData?.success) {
         const responseRequestId =
           typeof responseData?.request_id === "string" && responseData.request_id.trim()
             ? responseData.request_id
-            : "";
+            : headerRequestId;
         setRequestId(responseRequestId);
 
         if (uploadResponse.status === 502) {
@@ -144,7 +145,11 @@ export default function Home() {
       }
 
       setMessage(typeof responseData.message === "string" ? responseData.message : "");
-      setRequestId(typeof responseData.request_id === "string" ? responseData.request_id : "");
+      setRequestId(
+        typeof responseData.request_id === "string" && responseData.request_id.trim()
+          ? responseData.request_id
+          : headerRequestId,
+      );
       setLat(typeof responseData.latitude === "number" ? responseData.latitude : null);
       setLon(typeof responseData.longitude === "number" ? responseData.longitude : null);
 
@@ -255,6 +260,7 @@ export default function Home() {
         </div>
 
         {loading && <p className="status">Analyzing thermal and RGB images...</p>}
+        {loading && <p className="status subtleStatus">The progress text below is approximate until the backend responds.</p>}
         {loading && progressMessage && <p className="status progress">{progressMessage}</p>}
         {message && <p className="status warning">{message}</p>}
         {!loading && requestId && <p className="status subtleStatus">Request ID: {requestId}</p>}
