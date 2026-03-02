@@ -136,6 +136,7 @@ THERMAL_CENTER_SHIFT_Y = _env_int("THERMAL_CENTER_SHIFT_Y", -1)
 EQUIPMENT_BBOX_DILATION = _env_int("EQUIPMENT_BBOX_DILATION", 12)
 MATCH_DISTANCE_THRESHOLD = _env_float("MATCH_DISTANCE_THRESHOLD", 40.0)
 REFERENCE_TEMP_MAX_C = _env_float("REFERENCE_TEMP_MAX_C", 28.0)
+RGB_DETECTION_MAX_DIM = _env_int("RGB_DETECTION_MAX_DIM", 1600)
 HOTSPOT_MODEL_PATH = _resolve_model_path(os.getenv("HOTSPOT_MODEL_PATH", ""), DEFAULT_HOTSPOT_MODEL_PATH)
 EQUIPMENT_MODEL_PATH = _resolve_model_path(os.getenv("EQUIPMENT_MODEL_PATH", ""), DEFAULT_EQUIPMENT_MODEL_PATH)
 
@@ -570,6 +571,35 @@ def _run_yolo_detection(model: YOLO, image_path: Path, conf: float, iou: float) 
     return detections
 
 
+def _prepare_resized_inference_image(
+    image_path: Path,
+    file_id: str,
+    label: str,
+    max_dim: int,
+) -> Tuple[Path, float, float, Optional[Path], Tuple[int, int], Tuple[int, int]]:
+    with Image.open(image_path) as source_image:
+        source_width, source_height = source_image.size
+        if max_dim <= 0 or max(source_width, source_height) <= max_dim:
+            return image_path, 1.0, 1.0, None, (source_width, source_height), (source_width, source_height)
+
+        scale = max_dim / float(max(source_width, source_height))
+        resized_width = max(1, int(round(source_width * scale)))
+        resized_height = max(1, int(round(source_height * scale)))
+        resized_image = source_image.convert("RGB").resize((resized_width, resized_height), Image.Resampling.LANCZOS)
+
+    resized_path = UPLOAD_DIR / f"{file_id}_{label}_detect.jpg"
+    resized_image.save(resized_path, format="JPEG", quality=90)
+    resized_image.close()
+    return (
+        resized_path,
+        source_width / float(resized_width),
+        source_height / float(resized_height),
+        resized_path,
+        (source_width, source_height),
+        (resized_width, resized_height),
+    )
+
+
 def _centered_thermal_offset(
     rgb_width: int,
     rgb_height: int,
@@ -799,6 +829,7 @@ def _analyze_saved_pair(
         rgb_size=f"{rgb_image_width}x{rgb_image_height}",
     )
 
+    _log_upload_step(request_id, "thermal_model_started", image_path=thermal_uploaded_image_filename)
     hotspot_predictions = _run_yolo_detection(
         hotspot_model,
         thermal_uploaded_image_path,
@@ -807,12 +838,40 @@ def _analyze_saved_pair(
     )
     _log_upload_step(request_id, "thermal_model_done", hotspot_count=len(hotspot_predictions))
 
-    equipment_predictions = _run_yolo_detection(
-        equipment_model,
-        rgb_uploaded_image_path,
-        EQUIPMENT_CONFIDENCE,
-        EQUIPMENT_IOU,
+    rgb_detection_path, rgb_scale_x, rgb_scale_y, rgb_temp_path, rgb_original_size, rgb_detection_size = (
+        _prepare_resized_inference_image(
+            rgb_uploaded_image_path,
+            file_id,
+            "rgb",
+            RGB_DETECTION_MAX_DIM,
+        )
     )
+    _log_upload_step(
+        request_id,
+        "rgb_model_started",
+        image_path=rgb_detection_path.name,
+        original_size=f"{rgb_original_size[0]}x{rgb_original_size[1]}",
+        detect_size=f"{rgb_detection_size[0]}x{rgb_detection_size[1]}",
+        resized=rgb_temp_path is not None,
+    )
+    try:
+        equipment_predictions = _run_yolo_detection(
+            equipment_model,
+            rgb_detection_path,
+            EQUIPMENT_CONFIDENCE,
+            EQUIPMENT_IOU,
+        )
+    finally:
+        if rgb_temp_path is not None and rgb_temp_path.exists():
+            rgb_temp_path.unlink()
+    if rgb_scale_x != 1.0 or rgb_scale_y != 1.0:
+        for equipment_prediction in equipment_predictions:
+            equipment_prediction["bbox"] = [
+                float(equipment_prediction["bbox"][0] * rgb_scale_x),
+                float(equipment_prediction["bbox"][1] * rgb_scale_y),
+                float(equipment_prediction["bbox"][2] * rgb_scale_x),
+                float(equipment_prediction["bbox"][3] * rgb_scale_y),
+            ]
     _log_upload_step(request_id, "rgb_model_done", equipment_count=len(equipment_predictions))
 
     thermal_matrix, thermal_error, thermal_mode = extract_thermal_matrix(

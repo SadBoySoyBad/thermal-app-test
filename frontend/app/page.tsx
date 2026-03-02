@@ -238,11 +238,15 @@ export default function Home() {
         setThermalError("");
       }
     } catch (error) {
-      if (typeof error === "object" && error !== null && "message" in error) {
+      if (error instanceof TypeError) {
+        setMessage("Backend connection dropped during upload or analysis. Check Render backend logs and request ID.");
+      } else if (typeof error === "object" && error !== null && "message" in error) {
         const requestIdFromError =
           "requestId" in error && typeof error.requestId === "string" ? error.requestId : "";
         setRequestId(requestIdFromError);
-        setMessage(typeof error.message === "string" ? error.message : "Cannot reach backend. The request did not complete.");
+        const errorMessage =
+          typeof error.message === "string" && error.message.trim() ? error.message : "Cannot reach backend. The request did not complete.";
+        setMessage(errorMessage === "Failed to fetch" ? "Backend connection dropped during upload or analysis." : errorMessage);
       } else {
         setMessage("Cannot reach backend. The request did not complete.");
       }
