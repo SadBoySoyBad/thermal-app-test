@@ -1,6 +1,6 @@
 ﻿from pathlib import Path
 from typing import Any, Literal, Optional, Tuple
-import base64
+import gc
 import io
 import logging
 import os
@@ -817,15 +817,29 @@ async def upload_image(request: Request):
             longitude = dms_to_decimal(lon, lon_ref.values)
         _log_upload_step(request_id, "gps_checked", has_gps=has_gps)
 
-        with Image.open(thermal_uploaded_image_path) as thermal_source_image:
-            thermal_source_image = thermal_source_image.convert("RGB")
-            thermal_image_width, thermal_image_height = thermal_source_image.size
-            annotated_image = thermal_source_image.copy()
+        image_stream.close()
+        del tags
+        del thermal_bytes
+        del rgb_bytes
 
+        _log_upload_step(request_id, "thermal_image_probe_started")
+        with Image.open(thermal_uploaded_image_path) as thermal_source_image:
+            thermal_image_width, thermal_image_height = thermal_source_image.size
+        _log_upload_step(
+            request_id,
+            "thermal_image_probe_finished",
+            thermal_size=f"{thermal_image_width}x{thermal_image_height}",
+        )
+
+        _log_upload_step(request_id, "rgb_image_probe_started")
         with Image.open(rgb_uploaded_image_path) as rgb_source_image:
-            rgb_source_image = rgb_source_image.convert("RGB")
             rgb_image_width, rgb_image_height = rgb_source_image.size
-        draw = ImageDraw.Draw(annotated_image)
+        _log_upload_step(
+            request_id,
+            "rgb_image_probe_finished",
+            rgb_size=f"{rgb_image_width}x{rgb_image_height}",
+        )
+        gc.collect()
         _log_upload_step(
             request_id,
             "images_opened",
@@ -885,6 +899,12 @@ async def upload_image(request: Request):
             reference_temp=round(reference_temperature, 2) if reference_temperature is not None else None,
             matrix_size=f"{thermal_width}x{thermal_height}" if thermal_analysis_matrix is not None else None,
         )
+
+        _log_upload_step(request_id, "annotation_image_open_started")
+        with Image.open(thermal_uploaded_image_path) as thermal_source_image:
+            annotated_image = thermal_source_image.convert("RGB")
+        draw = ImageDraw.Draw(annotated_image)
+        _log_upload_step(request_id, "annotation_image_open_finished")
 
         equipments: list[dict[str, Any]] = []
         for equipment_prediction in equipment_predictions:
@@ -1029,21 +1049,22 @@ async def upload_image(request: Request):
 
         _log_upload_step(request_id, "matching_done", detection_count=len(detections))
 
-        annotated_buffer = io.BytesIO()
-        annotated_image.save(annotated_buffer, format="JPEG")
-        annotated_image_base64 = base64.b64encode(annotated_buffer.getvalue()).decode("ascii")
-        annotated_image_data_url = f"data:image/jpeg;base64,{annotated_image_base64}"
+        annotated_image_filename = f"{file_id}_annotated.jpg"
+        annotated_image_path = UPLOAD_DIR / annotated_image_filename
+        annotated_image.save(annotated_image_path, format="JPEG", quality=90)
+        annotated_image.close()
+        gc.collect()
         _log_upload_step(
             request_id,
-            "response_encoded",
-            encoded_bytes=len(annotated_buffer.getvalue()),
+            "annotated_image_saved",
+            annotated_path=annotated_image_filename,
         )
 
         response = {
             "success": True,
             "uploaded_image": f"/uploads/{thermal_uploaded_image_filename}",
             "uploaded_rgb_image": f"/uploads/{rgb_uploaded_image_filename}",
-            "annotated_image": annotated_image_data_url,
+            "annotated_image": f"/uploads/{annotated_image_filename}",
             "detections": detections,
             "has_gps": has_gps,
             "message": None,
