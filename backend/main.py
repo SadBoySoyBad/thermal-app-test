@@ -149,13 +149,12 @@ def _load_yolo_model(model_path: Path, required: bool) -> Optional[YOLO]:
     return YOLO(str(model_path))
 
 
-hotspot_model = _load_yolo_model(HOTSPOT_MODEL_PATH, required=True)
-equipment_model = _load_yolo_model(EQUIPMENT_MODEL_PATH, required=False)
 logger.info(
-    "models_ready hotspot_model=%s equipment_model=%s equipment_loaded=%s",
+    "models_config hotspot_model=%s hotspot_exists=%s equipment_model=%s equipment_exists=%s",
     HOTSPOT_MODEL_PATH,
+    HOTSPOT_MODEL_PATH.exists(),
     EQUIPMENT_MODEL_PATH,
-    equipment_model is not None,
+    EQUIPMENT_MODEL_PATH.exists(),
 )
 
 EXIFTOOL_DEFAULT_PATHS = [
@@ -571,6 +570,23 @@ def _run_yolo_detection(model: YOLO, image_path: Path, conf: float, iou: float) 
     return detections
 
 
+def _run_yolo_detection_from_path(
+    model_path: Path,
+    required: bool,
+    image_path: Path,
+    conf: float,
+    iou: float,
+) -> list[dict[str, Any]]:
+    model = _load_yolo_model(model_path, required=required)
+    if model is None:
+        return []
+    try:
+        return _run_yolo_detection(model, image_path, conf, iou)
+    finally:
+        del model
+        gc.collect()
+
+
 def _prepare_resized_inference_image(
     image_path: Path,
     file_id: str,
@@ -830,8 +846,9 @@ def _analyze_saved_pair(
     )
 
     _log_upload_step(request_id, "thermal_model_started", image_path=thermal_uploaded_image_filename)
-    hotspot_predictions = _run_yolo_detection(
-        hotspot_model,
+    hotspot_predictions = _run_yolo_detection_from_path(
+        HOTSPOT_MODEL_PATH,
+        True,
         thermal_uploaded_image_path,
         HOTSPOT_CONFIDENCE,
         HOTSPOT_IOU,
@@ -855,8 +872,9 @@ def _analyze_saved_pair(
         resized=rgb_temp_path is not None,
     )
     try:
-        equipment_predictions = _run_yolo_detection(
-            equipment_model,
+        equipment_predictions = _run_yolo_detection_from_path(
+            EQUIPMENT_MODEL_PATH,
+            False,
             rgb_detection_path,
             EQUIPMENT_CONFIDENCE,
             EQUIPMENT_IOU,
@@ -1138,7 +1156,7 @@ async def upload_image(request: Request):
                 "request_id": request_id,
             }
 
-        if equipment_model is None:
+        if not EQUIPMENT_MODEL_PATH.exists():
             _log_upload_step(request_id, "upload_rejected", reason="missing_equipment_model")
             return {
                 "success": False,
@@ -1292,7 +1310,7 @@ async def analyze_uploaded_pair(request: Request):
     if not file_id:
         return _json_error("Analyze request requires file_id.", request_id, 400)
 
-    if equipment_model is None:
+    if not EQUIPMENT_MODEL_PATH.exists():
         return _json_error(
             f"Equipment model not found at {EQUIPMENT_MODEL_PATH}. Set EQUIPMENT_MODEL_PATH first.",
             request_id,

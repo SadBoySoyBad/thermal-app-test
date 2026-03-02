@@ -39,6 +39,13 @@ function formatNumber(value: number | null | undefined, digits = 1) {
   return typeof value === "number" ? value.toFixed(digits) : null;
 }
 
+function createRequestId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  }
+  return Math.random().toString(36).slice(2, 10);
+}
+
 function getResponseRequestId(responseData: unknown, headerRequestId: string) {
   if (
     typeof responseData === "object" &&
@@ -115,19 +122,21 @@ export default function Home() {
         if (existingFileId) {
           params.set("file_id", existingFileId);
         }
+        const uploadRequestId = createRequestId();
 
         const uploadResponse = await fetch(`${backendBaseUrl}/upload-file?${params.toString()}`, {
           method: "POST",
           headers: {
             "Content-Type": file.type || "application/octet-stream",
             "x-file-name": file.name,
+            "x-request-id": uploadRequestId,
           },
           body: file,
         });
 
         const responseData = await uploadResponse.json().catch(() => null);
         const headerRequestId = uploadResponse.headers.get("x-request-id") ?? "";
-        const responseRequestId = getResponseRequestId(responseData, headerRequestId);
+        const responseRequestId = getResponseRequestId(responseData, headerRequestId || uploadRequestId);
 
         if (!uploadResponse.ok || !responseData?.success) {
           const fallbackMessage = uploadResponse.ok
@@ -156,17 +165,20 @@ export default function Home() {
       setRequestId(rgbUpload.requestId);
 
       setProgressMessage("Running hotspot and equipment analysis...");
+      const analyzeRequestId = createRequestId();
+      setRequestId(analyzeRequestId);
       const analyzeResponse = await fetch(`${backendBaseUrl}/analyze`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "x-request-id": analyzeRequestId,
         },
         body: JSON.stringify({ file_id: rgbUpload.fileId }),
       });
 
       const responseData = await analyzeResponse.json().catch(() => null);
       const headerRequestId = analyzeResponse.headers.get("x-request-id") ?? "";
-      const responseRequestId = getResponseRequestId(responseData, headerRequestId);
+      const responseRequestId = getResponseRequestId(responseData, headerRequestId || analyzeRequestId);
       if (!analyzeResponse.ok || !responseData?.success) {
         setRequestId(responseRequestId);
         if (analyzeResponse.status === 502) {
