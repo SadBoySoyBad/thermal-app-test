@@ -12,7 +12,7 @@ import uuid
 
 import exifread
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, Request
+from fastapi import FastAPI, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw
@@ -718,19 +718,31 @@ def _log_upload_step(request_id: str, step: str, **details: Any) -> None:
         logger.info("[%s] %s", request_id, step)
 
 
+def _is_uploaded_file(value: Any) -> bool:
+    return value is not None and hasattr(value, "read") and hasattr(value, "filename")
+
+
 @app.post("/upload")
-async def upload_image(
-    request: Request,
-    thermal_file: Optional[UploadFile] = File(None),
-    rgb_file: Optional[UploadFile] = File(None),
-    file: Optional[UploadFile] = File(None),
-):
+async def upload_image(request: Request):
     request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:8])
     started_at = time.perf_counter()
 
     try:
-        if thermal_file is None and file is not None:
-            thermal_file = file
+        _log_upload_step(request_id, "form_parsing_started")
+        form = await request.form()
+        _log_upload_step(request_id, "form_parsing_finished", fields=",".join(sorted(form.keys())))
+
+        thermal_file = form.get("thermal_file")
+        rgb_file = form.get("rgb_file")
+        legacy_file = form.get("file")
+
+        if thermal_file is None and legacy_file is not None:
+            thermal_file = legacy_file
+
+        if not _is_uploaded_file(thermal_file):
+            thermal_file = None
+        if not _is_uploaded_file(rgb_file):
+            rgb_file = None
 
         _log_upload_step(
             request_id,
