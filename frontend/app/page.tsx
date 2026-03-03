@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import dynamic from "next/dynamic";
 
 const MapView = dynamic(() => import("./MapView"), { ssr: false });
@@ -39,6 +39,12 @@ function formatNumber(value: number | null | undefined, digits = 1) {
   return typeof value === "number" ? value.toFixed(digits) : null;
 }
 
+function formatElapsedTime(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 function createRequestId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID().replace(/-/g, "").slice(0, 8);
@@ -59,11 +65,67 @@ function getResponseRequestId(responseData: unknown, headerRequestId: string) {
   return headerRequestId;
 }
 
+function describeBackendStep(step: string | null | undefined, details: Record<string, unknown> | null | undefined) {
+  switch (step) {
+    case "raw_upload_started":
+      return details?.kind === "rgb" ? "Uploading RGB image..." : "Uploading thermal image...";
+    case "raw_upload_finished":
+      return details?.kind === "rgb" ? "RGB image uploaded." : "Thermal image uploaded.";
+    case "analyze_started":
+      return "Analysis request accepted by backend.";
+    case "gps_checked":
+      return "Reading GPS metadata from thermal image...";
+    case "thermal_image_probe_started":
+      return "Opening thermal image...";
+    case "thermal_image_probe_finished":
+      return "Thermal image opened.";
+    case "rgb_image_probe_started":
+      return "Opening RGB image...";
+    case "rgb_image_probe_finished":
+      return "RGB image opened.";
+    case "images_opened":
+      return "Image sizes ready. Preparing model inference...";
+    case "thermal_model_started":
+      return "Running thermal hotspot model...";
+    case "thermal_model_done":
+      return "Thermal hotspot model finished.";
+    case "rgb_model_started":
+      return "Running RGB equipment model...";
+    case "rgb_model_done":
+      return "RGB equipment model finished.";
+    case "thermal_extraction_done":
+      return "Thermal temperature data extracted.";
+    case "thermal_matrix_ready":
+      return "Thermal matrix ready.";
+    case "annotation_image_open_started":
+      return "Preparing annotated thermal image...";
+    case "annotation_image_open_finished":
+      return "Annotated thermal image ready.";
+    case "matching_done":
+      return "Matching hotspot with equipment...";
+    case "annotated_image_saved":
+      return "Saving final result image...";
+    case "upload_completed":
+      return "Analysis complete.";
+    case "upload_client_disconnected":
+    case "raw_upload_client_disconnected":
+      return "Upload connection dropped before completion.";
+    case "upload_failed":
+    case "raw_upload_failed":
+    case "analyze_failed":
+    case "http_request_failed":
+      return "Backend reported a processing failure.";
+    default:
+      return step ? step.replace(/_/g, " ") : "";
+  }
+}
+
 export default function Home() {
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
   const [message, setMessage] = useState<string>("");
   const [progressMessage, setProgressMessage] = useState<string>("");
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [requestId, setRequestId] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [thermalFile, setThermalFile] = useState<File | null>(null);
@@ -89,7 +151,54 @@ export default function Home() {
     setThermalMode(null);
     setReferenceTemperature(null);
     setRequestId("");
+    setElapsedSeconds(0);
   }
+
+  useEffect(() => {
+    if (!loading || !requestId) {
+      return;
+    }
+
+    let isActive = true;
+
+    const pollProgress = async () => {
+      try {
+        const progressResponse = await fetch(`${backendBaseUrl}/progress/${requestId}`, {
+          cache: "no-store",
+        });
+        const progressData = await progressResponse.json().catch(() => null);
+        if (!isActive || !progressData?.success) {
+          return;
+        }
+
+        if (typeof progressData.elapsed_seconds === "number") {
+          setElapsedSeconds(Math.max(0, Math.round(progressData.elapsed_seconds)));
+        }
+
+        const backendStepMessage = describeBackendStep(
+          typeof progressData.step === "string" ? progressData.step : null,
+          typeof progressData.details === "object" && progressData.details !== null
+            ? (progressData.details as Record<string, unknown>)
+            : null,
+        );
+        if (backendStepMessage) {
+          setProgressMessage(backendStepMessage);
+        }
+      } catch {
+        // Keep the last known progress message while the active request is still running.
+      }
+    };
+
+    void pollProgress();
+    const pollTimer = window.setInterval(() => {
+      void pollProgress();
+    }, 1000);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(pollTimer);
+    };
+  }, [loading, requestId]);
 
   function handleThermalFileChange(event: ChangeEvent<HTMLInputElement>) {
     const selectedFile = event.target.files?.[0] ?? null;
@@ -321,10 +430,11 @@ export default function Home() {
         </div>
 
         {loading && <p className="status">Uploading files and analyzing the image pair...</p>}
-        {loading && <p className="status subtleStatus">The current step below reflects the active backend request.</p>}
+        {loading && <p className="status subtleStatus">The status below is pulled from the backend in real time.</p>}
         {loading && progressMessage && <p className="status progress">{progressMessage}</p>}
+        {loading && <p className="status subtleStatus">Elapsed: {formatElapsedTime(elapsedSeconds)}</p>}
+        {requestId && <p className="status subtleStatus">Request ID: {requestId}</p>}
         {message && <p className="status warning">{message}</p>}
-        {!loading && requestId && <p className="status subtleStatus">Request ID: {requestId}</p>}
       </section>
 
       {annotatedImage && (

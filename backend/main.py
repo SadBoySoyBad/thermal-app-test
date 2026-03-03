@@ -44,6 +44,47 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("thermal_app")
+request_progress: dict[str, dict[str, Any]] = {}
+
+
+PROGRESS_TTL_SECONDS = 60 * 60
+MAX_PROGRESS_ENTRIES = 256
+
+
+def _prune_request_progress(now: float) -> None:
+    expired_request_ids = [
+        request_id
+        for request_id, progress in request_progress.items()
+        if now - float(progress.get("updated_at", now)) > PROGRESS_TTL_SECONDS
+    ]
+    for request_id in expired_request_ids:
+        request_progress.pop(request_id, None)
+
+    while len(request_progress) > MAX_PROGRESS_ENTRIES:
+        oldest_request_id = min(
+            request_progress,
+            key=lambda item: float(request_progress[item].get("updated_at", now)),
+        )
+        request_progress.pop(oldest_request_id, None)
+
+
+def _set_request_progress(request_id: str, step: str, **details: Any) -> None:
+    now = time.time()
+    progress = request_progress.get(request_id)
+    if progress is None:
+        progress = {
+            "request_id": request_id,
+            "started_at": now,
+            "finished": False,
+            "failed": False,
+        }
+        request_progress[request_id] = progress
+
+    progress["step"] = step
+    progress["details"] = details
+    progress["updated_at"] = now
+    progress["elapsed_seconds"] = round(now - float(progress.get("started_at", now)), 1)
+    _prune_request_progress(now)
 
 
 @app.middleware("http")
@@ -51,6 +92,13 @@ async def log_request_lifecycle(request: Request, call_next):
     request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:8]
     request.state.request_id = request_id
     started_at = time.perf_counter()
+    _set_request_progress(
+        request_id,
+        "http_request_started",
+        method=request.method,
+        path=request.url.path,
+        content_length=request.headers.get("content-length"),
+    )
     logger.info(
         "[%s] http_request_started method=%s path=%s content_length=%s",
         request_id,
@@ -62,11 +110,31 @@ async def log_request_lifecycle(request: Request, call_next):
         response = await call_next(request)
     except Exception:
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        progress = request_progress.get(request_id)
+        if progress is None or progress.get("step") == "http_request_started":
+            _set_request_progress(request_id, "http_request_failed", elapsed_seconds=elapsed_seconds)
+        request_progress[request_id]["failed"] = True
+        request_progress[request_id]["finished"] = True
         logger.exception("[%s] http_request_failed elapsed_seconds=%s", request_id, elapsed_seconds)
         raise
 
     response.headers["x-request-id"] = request_id
     elapsed_seconds = round(time.perf_counter() - started_at, 2)
+    progress = request_progress.get(request_id)
+    if progress is None:
+        _set_request_progress(
+            request_id,
+            "http_request_finished",
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            elapsed_seconds=elapsed_seconds,
+        )
+        progress = request_progress[request_id]
+    progress["finished"] = True
+    progress["status_code"] = response.status_code
+    progress["updated_at"] = time.time()
+    progress["elapsed_seconds"] = elapsed_seconds
     logger.info(
         "[%s] http_request_finished method=%s path=%s status=%s elapsed_seconds=%s",
         request_id,
@@ -139,8 +207,8 @@ MATCH_DISTANCE_THRESHOLD = _env_float("MATCH_DISTANCE_THRESHOLD", 40.0)
 REFERENCE_TEMP_MAX_C = _env_float("REFERENCE_TEMP_MAX_C", 28.0)
 RGB_DETECTION_MAX_DIM = _env_int("RGB_DETECTION_MAX_DIM", 1600)
 RGB_DETECTION_CROP_MARGIN = _env_int("RGB_DETECTION_CROP_MARGIN", 120)
-HOTSPOT_IMGSZ = _env_int("HOTSPOT_IMGSZ", 512)
-EQUIPMENT_IMGSZ = _env_int("EQUIPMENT_IMGSZ", 512)
+HOTSPOT_IMGSZ = _env_int("HOTSPOT_IMGSZ", 640)
+EQUIPMENT_IMGSZ = _env_int("EQUIPMENT_IMGSZ", 640)
 TORCH_NUM_THREADS = max(1, _env_int("TORCH_NUM_THREADS", 1))
 TORCH_INTEROP_THREADS = max(1, _env_int("TORCH_INTEROP_THREADS", 1))
 HOTSPOT_MODEL_PATH = _resolve_model_path(os.getenv("HOTSPOT_MODEL_PATH", ""), DEFAULT_HOTSPOT_MODEL_PATH)
@@ -827,6 +895,7 @@ def _classify_priority(delta_above_reference: float) -> Tuple[str, str]:
 
 
 def _log_upload_step(request_id: str, step: str, **details: Any) -> None:
+    _set_request_progress(request_id, step, **details)
     detail_text = " ".join(f"{key}={value}" for key, value in details.items())
     if detail_text:
         logger.info("[%s] %s %s", request_id, step, detail_text)
@@ -836,6 +905,27 @@ def _log_upload_step(request_id: str, step: str, **details: Any) -> None:
 
 def _is_uploaded_file(value: Any) -> bool:
     return value is not None and hasattr(value, "read") and hasattr(value, "filename")
+
+
+@app.get("/progress/{request_id}")
+def get_request_progress(request_id: str):
+    progress = request_progress.get(request_id)
+    if progress is None:
+        return {"success": False, "request_id": request_id, "message": "Progress not found."}
+    now = time.time()
+    response = {
+        "success": True,
+        "request_id": request_id,
+        "step": progress.get("step"),
+        "details": progress.get("details", {}),
+        "started_at": progress.get("started_at"),
+        "updated_at": progress.get("updated_at"),
+        "elapsed_seconds": round(now - float(progress.get("started_at", now)), 1),
+        "finished": bool(progress.get("finished", False)),
+        "failed": bool(progress.get("failed", False)),
+        "status_code": progress.get("status_code"),
+    }
+    return response
 
 
 def _analyze_saved_pair(
@@ -1272,6 +1362,8 @@ async def upload_image(request: Request):
         )
     except ClientDisconnect:
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _set_request_progress(request_id, "upload_client_disconnected", elapsed_seconds=elapsed_seconds)
+        request_progress[request_id]["failed"] = True
         logger.warning("[%s] upload_client_disconnected elapsed_seconds=%s", request_id, elapsed_seconds)
         return _json_error(
             "Upload connection dropped before the backend received all files.",
@@ -1280,6 +1372,8 @@ async def upload_image(request: Request):
         )
     except Exception:
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _set_request_progress(request_id, "upload_failed", elapsed_seconds=elapsed_seconds)
+        request_progress[request_id]["failed"] = True
         logger.exception("[%s] upload_failed elapsed_seconds=%s", request_id, elapsed_seconds)
         return _json_error(
             "Backend failed while processing the upload. Check backend logs with the request ID.",
@@ -1343,6 +1437,8 @@ async def upload_file_raw(request: Request):
         if upload_path.exists():
             upload_path.unlink()
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _set_request_progress(request_id, "raw_upload_client_disconnected", kind=kind, elapsed_seconds=elapsed_seconds)
+        request_progress[request_id]["failed"] = True
         logger.warning("[%s] raw_upload_client_disconnected kind=%s elapsed_seconds=%s", request_id, kind, elapsed_seconds)
         return _json_error(
             "Upload connection dropped before the backend received the full file.",
@@ -1355,6 +1451,8 @@ async def upload_file_raw(request: Request):
         if upload_path.exists():
             upload_path.unlink()
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _set_request_progress(request_id, "raw_upload_failed", kind=kind, elapsed_seconds=elapsed_seconds)
+        request_progress[request_id]["failed"] = True
         logger.exception("[%s] raw_upload_failed kind=%s elapsed_seconds=%s", request_id, kind, elapsed_seconds)
         return _json_error(
             "Backend failed while receiving the uploaded file.",
@@ -1417,6 +1515,8 @@ async def analyze_uploaded_pair(request: Request):
         )
     except Exception:
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _set_request_progress(request_id, "analyze_failed", file_id=file_id, elapsed_seconds=elapsed_seconds)
+        request_progress[request_id]["failed"] = True
         logger.exception("[%s] analyze_failed file_id=%s elapsed_seconds=%s", request_id, file_id, elapsed_seconds)
         return _json_error(
             "Backend failed while analyzing the uploaded image pair.",
