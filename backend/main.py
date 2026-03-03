@@ -138,6 +138,7 @@ EQUIPMENT_BBOX_DILATION = _env_int("EQUIPMENT_BBOX_DILATION", 12)
 MATCH_DISTANCE_THRESHOLD = _env_float("MATCH_DISTANCE_THRESHOLD", 40.0)
 REFERENCE_TEMP_MAX_C = _env_float("REFERENCE_TEMP_MAX_C", 28.0)
 RGB_DETECTION_MAX_DIM = _env_int("RGB_DETECTION_MAX_DIM", 1600)
+RGB_DETECTION_CROP_MARGIN = _env_int("RGB_DETECTION_CROP_MARGIN", 120)
 TORCH_NUM_THREADS = max(1, _env_int("TORCH_NUM_THREADS", 1))
 TORCH_INTEROP_THREADS = max(1, _env_int("TORCH_INTEROP_THREADS", 1))
 HOTSPOT_MODEL_PATH = _resolve_model_path(os.getenv("HOTSPOT_MODEL_PATH", ""), DEFAULT_HOTSPOT_MODEL_PATH)
@@ -599,32 +600,57 @@ def _run_yolo_detection_from_path(
         gc.collect()
 
 
-def _prepare_resized_inference_image(
+def _thermal_overlay_bbox_on_rgb(
+    thermal_width: int,
+    thermal_height: int,
+    rgb_width: int,
+    rgb_height: int,
+) -> Tuple[int, int, int, int]:
+    return _project_thermal_bbox_to_rgb(
+        (0, 0, thermal_width, thermal_height),
+        thermal_width,
+        thermal_height,
+        rgb_width,
+        rgb_height,
+    )
+
+
+def _prepare_cropped_resized_inference_image(
     image_path: Path,
     file_id: str,
     label: str,
+    crop_bbox: Tuple[int, int, int, int],
     max_dim: int,
-) -> Tuple[Path, float, float, Optional[Path], Tuple[int, int], Tuple[int, int]]:
+) -> Tuple[Path, float, float, int, int, Optional[Path], Tuple[int, int], Tuple[int, int], Tuple[int, int, int, int]]:
+    crop_x1, crop_y1, crop_x2, crop_y2 = crop_bbox
     with Image.open(image_path) as source_image:
-        source_width, source_height = source_image.size
-        if max_dim <= 0 or max(source_width, source_height) <= max_dim:
-            return image_path, 1.0, 1.0, None, (source_width, source_height), (source_width, source_height)
+        cropped_image = source_image.crop((crop_x1, crop_y1, crop_x2, crop_y2)).convert("RGB")
 
-        scale = max_dim / float(max(source_width, source_height))
-        resized_width = max(1, int(round(source_width * scale)))
-        resized_height = max(1, int(round(source_height * scale)))
-        resized_image = source_image.convert("RGB").resize((resized_width, resized_height), Image.Resampling.LANCZOS)
+    crop_width, crop_height = cropped_image.size
+    if max_dim > 0 and max(crop_width, crop_height) > max_dim:
+        scale = max_dim / float(max(crop_width, crop_height))
+        resized_width = max(1, int(round(crop_width * scale)))
+        resized_height = max(1, int(round(crop_height * scale)))
+        detection_image = cropped_image.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
+        cropped_image.close()
+    else:
+        detection_image = cropped_image
+        resized_width = crop_width
+        resized_height = crop_height
 
-    resized_path = UPLOAD_DIR / f"{file_id}_{label}_detect.jpg"
-    resized_image.save(resized_path, format="JPEG", quality=90)
-    resized_image.close()
+    detection_path = UPLOAD_DIR / f"{file_id}_{label}_detect.jpg"
+    detection_image.save(detection_path, format="JPEG", quality=90)
+    detection_image.close()
     return (
-        resized_path,
-        source_width / float(resized_width),
-        source_height / float(resized_height),
-        resized_path,
-        (source_width, source_height),
+        detection_path,
+        crop_width / float(resized_width),
+        crop_height / float(resized_height),
+        crop_x1,
+        crop_y1,
+        detection_path,
+        (crop_width, crop_height),
         (resized_width, resized_height),
+        crop_bbox,
     )
 
 
@@ -867,21 +893,45 @@ def _analyze_saved_pair(
     )
     _log_upload_step(request_id, "thermal_model_done", hotspot_count=len(hotspot_predictions))
 
-    rgb_detection_path, rgb_scale_x, rgb_scale_y, rgb_temp_path, rgb_original_size, rgb_detection_size = (
-        _prepare_resized_inference_image(
-            rgb_uploaded_image_path,
-            file_id,
-            "rgb",
-            RGB_DETECTION_MAX_DIM,
-        )
+    rgb_overlay_bbox = _thermal_overlay_bbox_on_rgb(
+        thermal_image_width,
+        thermal_image_height,
+        rgb_image_width,
+        rgb_image_height,
+    )
+    rgb_crop_bbox = _dilate_bbox(
+        rgb_overlay_bbox,
+        RGB_DETECTION_CROP_MARGIN,
+        rgb_image_width,
+        rgb_image_height,
+    )
+    (
+        rgb_detection_path,
+        rgb_scale_x,
+        rgb_scale_y,
+        rgb_crop_offset_x,
+        rgb_crop_offset_y,
+        rgb_temp_path,
+        rgb_crop_size,
+        rgb_detection_size,
+        _,
+    ) = _prepare_cropped_resized_inference_image(
+        rgb_uploaded_image_path,
+        file_id,
+        "rgb",
+        rgb_crop_bbox,
+        RGB_DETECTION_MAX_DIM,
     )
     _log_upload_step(
         request_id,
         "rgb_model_started",
         image_path=rgb_detection_path.name,
-        original_size=f"{rgb_original_size[0]}x{rgb_original_size[1]}",
+        original_size=f"{rgb_image_width}x{rgb_image_height}",
+        overlay_bbox=f"{rgb_overlay_bbox[0]},{rgb_overlay_bbox[1]},{rgb_overlay_bbox[2]},{rgb_overlay_bbox[3]}",
+        crop_bbox=f"{rgb_crop_bbox[0]},{rgb_crop_bbox[1]},{rgb_crop_bbox[2]},{rgb_crop_bbox[3]}",
+        crop_size=f"{rgb_crop_size[0]}x{rgb_crop_size[1]}",
         detect_size=f"{rgb_detection_size[0]}x{rgb_detection_size[1]}",
-        resized=rgb_temp_path is not None,
+        resized=rgb_detection_size != rgb_crop_size,
     )
     try:
         equipment_predictions = _run_yolo_detection_from_path(
@@ -894,14 +944,13 @@ def _analyze_saved_pair(
     finally:
         if rgb_temp_path is not None and rgb_temp_path.exists():
             rgb_temp_path.unlink()
-    if rgb_scale_x != 1.0 or rgb_scale_y != 1.0:
-        for equipment_prediction in equipment_predictions:
-            equipment_prediction["bbox"] = [
-                float(equipment_prediction["bbox"][0] * rgb_scale_x),
-                float(equipment_prediction["bbox"][1] * rgb_scale_y),
-                float(equipment_prediction["bbox"][2] * rgb_scale_x),
-                float(equipment_prediction["bbox"][3] * rgb_scale_y),
-            ]
+    for equipment_prediction in equipment_predictions:
+        equipment_prediction["bbox"] = [
+            float(equipment_prediction["bbox"][0] * rgb_scale_x + rgb_crop_offset_x),
+            float(equipment_prediction["bbox"][1] * rgb_scale_y + rgb_crop_offset_y),
+            float(equipment_prediction["bbox"][2] * rgb_scale_x + rgb_crop_offset_x),
+            float(equipment_prediction["bbox"][3] * rgb_scale_y + rgb_crop_offset_y),
+        ]
     _log_upload_step(request_id, "rgb_model_done", equipment_count=len(equipment_predictions))
 
     thermal_matrix, thermal_error, thermal_mode = extract_thermal_matrix(
