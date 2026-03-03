@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw
 from starlette.requests import ClientDisconnect
+import torch
 from ultralytics import YOLO
 
 
@@ -137,8 +138,17 @@ EQUIPMENT_BBOX_DILATION = _env_int("EQUIPMENT_BBOX_DILATION", 12)
 MATCH_DISTANCE_THRESHOLD = _env_float("MATCH_DISTANCE_THRESHOLD", 40.0)
 REFERENCE_TEMP_MAX_C = _env_float("REFERENCE_TEMP_MAX_C", 28.0)
 RGB_DETECTION_MAX_DIM = _env_int("RGB_DETECTION_MAX_DIM", 1600)
+TORCH_NUM_THREADS = max(1, _env_int("TORCH_NUM_THREADS", 1))
+TORCH_INTEROP_THREADS = max(1, _env_int("TORCH_INTEROP_THREADS", 1))
 HOTSPOT_MODEL_PATH = _resolve_model_path(os.getenv("HOTSPOT_MODEL_PATH", ""), DEFAULT_HOTSPOT_MODEL_PATH)
 EQUIPMENT_MODEL_PATH = _resolve_model_path(os.getenv("EQUIPMENT_MODEL_PATH", ""), DEFAULT_EQUIPMENT_MODEL_PATH)
+
+torch.set_num_threads(TORCH_NUM_THREADS)
+if hasattr(torch, "set_num_interop_threads"):
+    try:
+        torch.set_num_interop_threads(TORCH_INTEROP_THREADS)
+    except RuntimeError:
+        pass
 
 
 def _load_yolo_model(model_path: Path, required: bool) -> Optional[YOLO]:
@@ -150,11 +160,13 @@ def _load_yolo_model(model_path: Path, required: bool) -> Optional[YOLO]:
 
 
 logger.info(
-    "models_config hotspot_model=%s hotspot_exists=%s equipment_model=%s equipment_exists=%s",
+    "models_config hotspot_model=%s hotspot_exists=%s equipment_model=%s equipment_exists=%s torch_threads=%s torch_interop_threads=%s",
     HOTSPOT_MODEL_PATH,
     HOTSPOT_MODEL_PATH.exists(),
     EQUIPMENT_MODEL_PATH,
     EQUIPMENT_MODEL_PATH.exists(),
+    TORCH_NUM_THREADS,
+    TORCH_INTEROP_THREADS,
 )
 
 EXIFTOOL_DEFAULT_PATHS = [

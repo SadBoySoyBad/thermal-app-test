@@ -5,6 +5,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 \
+    TORCH_NUM_THREADS=1 \
+    TORCH_INTEROP_THREADS=1 \
     EXIFTOOL_PATH=/usr/bin/exiftool \
     DJI_IRP_PATH=/app/tools/dji-tsdk/utility/bin/linux/release_x64/dji_irp \
     LD_LIBRARY_PATH=/app/tools/dji-tsdk/utility/bin/linux/release_x64 \
@@ -23,10 +29,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 RUN set -eux; \
     python -m pip install --upgrade --retries 15 --timeout 120 pip; \
+    grep -vE '^(torch|torchvision)==.*$' requirements.txt > requirements.render.txt; \
     attempt=1; \
     until [ "$attempt" -gt 4 ]; do \
-      python -m pip install --retries 15 --timeout 120 --progress-bar off --prefer-binary -r requirements.txt && break; \
-      echo "pip install failed (attempt ${attempt}/4), retrying in 20s..."; \
+      python -m pip install --retries 15 --timeout 120 --progress-bar off --prefer-binary --index-url https://download.pytorch.org/whl/cpu torch==2.10.0 torchvision==0.25.0 && break; \
+      echo "cpu torch install failed (attempt ${attempt}/4), retrying in 20s..."; \
+      if [ "$attempt" -eq 4 ]; then exit 1; fi; \
+      attempt=$((attempt + 1)); \
+      sleep 20; \
+    done; \
+    attempt=1; \
+    until [ "$attempt" -gt 4 ]; do \
+      python -m pip install --retries 15 --timeout 120 --progress-bar off --prefer-binary -r requirements.render.txt && break; \
+      echo "requirements install failed (attempt ${attempt}/4), retrying in 20s..."; \
       if [ "$attempt" -eq 4 ]; then exit 1; fi; \
       attempt=$((attempt + 1)); \
       sleep 20; \
