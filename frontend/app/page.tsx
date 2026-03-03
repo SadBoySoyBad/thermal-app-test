@@ -126,6 +126,7 @@ export default function Home() {
   const [message, setMessage] = useState<string>("");
   const [progressMessage, setProgressMessage] = useState<string>("");
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [requestId, setRequestId] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [thermalFile, setThermalFile] = useState<File | null>(null);
@@ -152,6 +153,7 @@ export default function Home() {
     setReferenceTemperature(null);
     setRequestId("");
     setElapsedSeconds(0);
+    setRunStartedAt(null);
   }
 
   useEffect(() => {
@@ -169,10 +171,6 @@ export default function Home() {
         const progressData = await progressResponse.json().catch(() => null);
         if (!isActive || !progressData?.success) {
           return;
-        }
-
-        if (typeof progressData.elapsed_seconds === "number") {
-          setElapsedSeconds(Math.max(0, Math.round(progressData.elapsed_seconds)));
         }
 
         const backendStepMessage = describeBackendStep(
@@ -200,6 +198,23 @@ export default function Home() {
     };
   }, [loading, requestId]);
 
+  useEffect(() => {
+    if (!loading || runStartedAt === null) {
+      return;
+    }
+
+    const updateElapsed = () => {
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - runStartedAt) / 1000)));
+    };
+
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [loading, runStartedAt]);
+
   function handleThermalFileChange(event: ChangeEvent<HTMLInputElement>) {
     const selectedFile = event.target.files?.[0] ?? null;
     setThermalFile(selectedFile);
@@ -224,6 +239,7 @@ export default function Home() {
     setProgressMessage("Uploading thermal image...");
     setLoading(true);
     resetResults();
+    setRunStartedAt(Date.now());
 
     try {
       const uploadSingleFile = async (file: File, kind: "thermal" | "rgb", existingFileId?: string) => {
@@ -430,7 +446,6 @@ export default function Home() {
         </div>
 
         {loading && <p className="status">Uploading files and analyzing the image pair...</p>}
-        {loading && <p className="status subtleStatus">The status below is pulled from the backend in real time.</p>}
         {loading && progressMessage && <p className="status progress">{progressMessage}</p>}
         {loading && <p className="status subtleStatus">Elapsed: {formatElapsedTime(elapsedSeconds)}</p>}
         {requestId && <p className="status subtleStatus">Request ID: {requestId}</p>}
