@@ -139,6 +139,8 @@ MATCH_DISTANCE_THRESHOLD = _env_float("MATCH_DISTANCE_THRESHOLD", 40.0)
 REFERENCE_TEMP_MAX_C = _env_float("REFERENCE_TEMP_MAX_C", 28.0)
 RGB_DETECTION_MAX_DIM = _env_int("RGB_DETECTION_MAX_DIM", 1600)
 RGB_DETECTION_CROP_MARGIN = _env_int("RGB_DETECTION_CROP_MARGIN", 120)
+HOTSPOT_IMGSZ = _env_int("HOTSPOT_IMGSZ", 640)
+EQUIPMENT_IMGSZ = _env_int("EQUIPMENT_IMGSZ", 640)
 TORCH_NUM_THREADS = max(1, _env_int("TORCH_NUM_THREADS", 1))
 TORCH_INTEROP_THREADS = max(1, _env_int("TORCH_INTEROP_THREADS", 1))
 HOTSPOT_MODEL_PATH = _resolve_model_path(os.getenv("HOTSPOT_MODEL_PATH", ""), DEFAULT_HOTSPOT_MODEL_PATH)
@@ -161,11 +163,13 @@ def _load_yolo_model(model_path: Path, required: bool) -> Optional[YOLO]:
 
 
 logger.info(
-    "models_config hotspot_model=%s hotspot_exists=%s equipment_model=%s equipment_exists=%s torch_threads=%s torch_interop_threads=%s",
+    "models_config hotspot_model=%s hotspot_exists=%s equipment_model=%s equipment_exists=%s hotspot_imgsz=%s equipment_imgsz=%s torch_threads=%s torch_interop_threads=%s",
     HOTSPOT_MODEL_PATH,
     HOTSPOT_MODEL_PATH.exists(),
     EQUIPMENT_MODEL_PATH,
     EQUIPMENT_MODEL_PATH.exists(),
+    HOTSPOT_IMGSZ,
+    EQUIPMENT_IMGSZ,
     TORCH_NUM_THREADS,
     TORCH_INTEROP_THREADS,
 )
@@ -550,12 +554,13 @@ def _json_error(message: str, request_id: str, status_code: int, **extra: Any) -
     )
 
 
-def _run_yolo_detection(model: YOLO, image_path: Path, conf: float, iou: float) -> list[dict[str, Any]]:
+def _run_yolo_detection(model: YOLO, image_path: Path, conf: float, iou: float, imgsz: int) -> list[dict[str, Any]]:
     model_results = model(
         str(image_path),
         conf=conf,
         iou=iou,
         device=YOLO_DEVICE,
+        imgsz=max(32, imgsz),
     )
 
     detections: list[dict[str, Any]] = []
@@ -589,12 +594,13 @@ def _run_yolo_detection_from_path(
     image_path: Path,
     conf: float,
     iou: float,
+    imgsz: int,
 ) -> list[dict[str, Any]]:
     model = _load_yolo_model(model_path, required=required)
     if model is None:
         return []
     try:
-        return _run_yolo_detection(model, image_path, conf, iou)
+        return _run_yolo_detection(model, image_path, conf, iou, imgsz)
     finally:
         del model
         gc.collect()
@@ -890,6 +896,7 @@ def _analyze_saved_pair(
         thermal_uploaded_image_path,
         HOTSPOT_CONFIDENCE,
         HOTSPOT_IOU,
+        HOTSPOT_IMGSZ,
     )
     _log_upload_step(request_id, "thermal_model_done", hotspot_count=len(hotspot_predictions))
 
@@ -940,6 +947,7 @@ def _analyze_saved_pair(
             rgb_detection_path,
             EQUIPMENT_CONFIDENCE,
             EQUIPMENT_IOU,
+            EQUIPMENT_IMGSZ,
         )
     finally:
         if rgb_temp_path is not None and rgb_temp_path.exists():
