@@ -80,7 +80,7 @@ body::after {
 }
 
 .page {
-  max-width: 900px;
+  max-width: 1120px;
   margin: 0 auto;
   padding: 48px 20px 64px;
   display: grid;
@@ -126,7 +126,7 @@ body::after {
 
 .uploadRow {
   display: grid;
-  grid-template-columns: 120px auto 1fr;
+  grid-template-columns: 160px auto 1fr;
   gap: 12px 16px;
   align-items: center;
 }
@@ -222,6 +222,14 @@ body::after {
   padding: 20px;
 }
 
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
 .mapTitle {
   margin: 0 0 12px;
   font-size: 18px;
@@ -235,7 +243,519 @@ body::after {
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
 
-@media (max-width: 640px) {
+.summaryBar {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.summaryBar span,
+.selectionChip,
+.pairChip,
+.warningPanel,
+.detailCard,
+.mapSummary {
+  border: 1px solid rgba(31, 27, 22, 0.08);
+}
+
+.summaryBar span {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.pairGrid {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.pairChip {
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.65);
+  min-width: 0;
+}
+
+.pairChipTitle,
+.warningTitle,
+.detailTitle,
+.mapSummaryTitle,
+.popupTitle {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.pairChipMeta,
+.detailLine,
+.mapSummaryLine,
+.popupLine {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.pairChipMeta + .pairChipMeta,
+.detailLine + .detailLine,
+.mapSummaryLine + .mapSummaryLine,
+.popupLine + .popupLine {
+  margin-top: 6px;
+}
+
+.warningPanel {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 239, 231, 0.8);
+}
+
+.warningList {
+  margin: 0;
+  padding-left: 18px;
+  color: #8f3c16;
+}
+
+.warningList li + li {
+  margin-top: 8px;
+}
+
+.navigatorButtons {
+  display: flex;
+  gap: 10px;
+}
+
+.navButton {
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(31, 27, 22, 0.1);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-0);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.selectionRail {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding-bottom: 4px;
+  margin-bottom: 18px;
+}
+
+.selectionChip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.8);
+  padding: 10px 14px;
+  color: var(--text-1);
+  cursor: pointer;
+  white-space: normal;
+}
+
+.selectionRailDesktop {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  overflow: hidden;
+}
+
+.selectionChipDesktop {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.selectionRailMobile {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  box-sizing: border-box;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 8px;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+.selectionRailMobile::-webkit-scrollbar {
+  height: 6px;
+}
+
+.selectionRailMobile::-webkit-scrollbar-thumb {
+  background: rgba(31, 27, 22, 0.18);
+  border-radius: 999px;
+}
+
+.selectionChipMobile {
+  flex: 0 0 124px;
+  width: 124px;
+  min-width: 124px;
+  max-width: 124px;
+  padding: 10px 10px;
+  scroll-snap-align: start;
+}
+
+.selectionChip.active {
+  background: #1f1b16;
+  color: #fff8ef;
+}
+
+.selectionChipIndex {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(31, 27, 22, 0.08);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.selectionChip.active .selectionChipIndex {
+  background: rgba(255, 248, 239, 0.14);
+}
+
+.resultGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.annotatedPanel {
+  display: grid;
+  gap: 12px;
+}
+
+.annotatedImage {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  display: block;
+}
+
+.detailColumn,
+.detailStack,
+.hotspotList {
+  display: grid;
+  gap: 12px;
+}
+
+.detailCard,
+.mapSummary {
+  border-radius: 16px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.hotspotButton {
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(31, 27, 22, 0.08);
+  background: rgba(255, 255, 255, 0.82);
+  cursor: pointer;
+}
+
+.hotspotButton.active {
+  border-color: rgba(255, 106, 61, 0.35);
+  box-shadow: 0 8px 24px rgba(255, 106, 61, 0.12);
+}
+
+.hotspotName {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.hotspotMeta {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.mapPlaceholder,
+.emptyState {
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  border: 1px dashed rgba(31, 27, 22, 0.14);
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--text-1);
+  text-align: center;
+  padding: 20px;
+}
+
+.mapSummary {
+  margin-top: 14px;
+}
+
+.mapSummaryList,
+.popupHotspotList {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.mapSummaryHotspot,
+.popupHotspotItem {
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(31, 27, 22, 0.08);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.popupContent {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mapPopup .leaflet-popup-content-wrapper {
+  border-radius: 16px;
+  box-shadow: 0 16px 34px rgba(16, 12, 8, 0.14);
+  background: rgba(255, 252, 247, 0.98);
+  width: min(300px, calc(100vw - 56px));
+  min-width: 260px;
+  overflow: hidden;
+}
+
+.mapPopup .leaflet-popup-content {
+  margin: 0;
+  width: min(300px, calc(100vw - 56px)) !important;
+  min-width: min(260px, calc(100vw - 56px));
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.mapPopup .leaflet-popup-tip {
+  background: rgba(255, 252, 247, 0.98);
+}
+
+.mapPopup .leaflet-popup-close-button {
+  top: 8px;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  font-size: 15px;
+  color: #80776d;
+}
+
+.mapPopup .leaflet-popup-close-button:hover {
+  color: #2d2823;
+}
+
+.mapPopup .leaflet-popup-close-button span {
+  display: block;
+  line-height: 1;
+}
+
+.mapPopup .leaflet-popup-content-wrapper,
+.mapPopup .leaflet-popup-tip {
+  border: 1px solid rgba(31, 27, 22, 0.08);
+}
+
+.mapPopupBody {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px 10px;
+}
+
+.mapPopupHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-right: 16px;
+}
+
+.mapPopupTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: #2e2924;
+}
+
+.mapPopupCount {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(255, 106, 61, 0.1);
+  color: #bf592a;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.mapPopupHotspotList {
+  display: grid;
+  gap: 4px;
+  max-height: 228px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.mapPopupHotspotCard {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px 7px;
+  border-radius: 12px;
+  border: 1px solid rgba(31, 27, 22, 0.08);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.mapPopupHotspotHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mapPopupHotspotName {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #2f2a25;
+}
+
+.mapPopupPriority {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.mapPopupPriorityP1 {
+  background: rgba(209, 63, 47, 0.14);
+  color: #b53c2f;
+}
+
+.mapPopupPriorityP2 {
+  background: rgba(240, 138, 41, 0.16);
+  color: #b56a18;
+}
+
+.mapPopupPriorityP3 {
+  background: rgba(243, 190, 77, 0.2);
+  color: #8f6a10;
+}
+
+.mapPopupPriorityDefault {
+  background: rgba(47, 93, 150, 0.12);
+  color: #355d92;
+}
+
+.mapPopupFactList {
+  display: grid;
+  gap: 2px;
+}
+
+.mapPopupFactRow {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.2;
+  color: #433c35;
+}
+
+.mapPopupFactInlineLabel {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: #6f665c;
+}
+
+.mapPopupFactInlineValue {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.2;
+  color: #433c35;
+  overflow-wrap: anywhere;
+}
+
+.mapMarkerShell {
+  background: transparent;
+  border: 0;
+}
+
+.mapMarker {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 8px 20px rgba(16, 12, 8, 0.25);
+}
+
+.mapMarker.selected {
+  transform: scale(1.1);
+}
+
+.mapMarkerP1 {
+  background: #d13f2f;
+}
+
+.mapMarkerP2 {
+  background: #f08a29;
+}
+
+.mapMarkerP3 {
+  background: #f3be4d;
+}
+
+.mapMarkerDefault {
+  background: #2f5d96;
+}
+
+@media (max-width: 820px) {
+  .page {
+    padding: 32px 12px 48px;
+  }
+
+  .card {
+    padding: 18px;
+  }
+
+  .mapCard {
+    overflow-x: hidden;
+  }
+
   .uploadRow {
     grid-template-columns: 1fr;
     align-items: start;
@@ -243,6 +763,38 @@ body::after {
 
   .fileName {
     white-space: normal;
+  }
+
+  .sectionHeader {
+    flex-direction: column;
+  }
+
+  .navigatorButtons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    max-width: 100%;
+    gap: 8px;
+  }
+
+  .navButton {
+    min-width: 0;
+    padding: 10px 12px;
+  }
+
+  .selectionRail {
+    margin: 0 0 18px;
+  }
+
+  .selectionRailMobile {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding-inline: 0;
+  }
+
+  .resultGrid {
+    grid-template-columns: 1fr;
   }
 }
 

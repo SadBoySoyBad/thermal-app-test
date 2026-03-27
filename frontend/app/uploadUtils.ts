@@ -1,0 +1,495 @@
+import type { MapMarkerItem } from "./MapView";
+
+// helper file นี้เก็บ type + ฟังก์ชันย่อยของหน้า upload
+// เพื่อไม่ให้ page.tsx ยาวเกินไป
+export type MatchMethod = "inside" | "nearest" | "unknown";
+export type ThermalMode = "none" | "absolute" | "relative";
+type PairKind = "thermal" | "rgb" | "unknown";
+
+export type Detection = {
+  bbox: [number, number, number, number];
+  thermal_bbox?: [number, number, number, number];
+  hotspot_confidence?: number | null;
+  hotspot_center?: [number, number] | null;
+  max_temp: number | null;
+  min_temp: number | null;
+  avg_temp: number | null;
+  max_raw?: number | null;
+  min_raw?: number | null;
+  avg_raw?: number | null;
+  max_point?: [number, number] | null;
+  min_point?: [number, number] | null;
+  equipment_class?: string | null;
+  equipment_confidence?: number | null;
+  equipment_bbox?: [number, number, number, number] | null;
+  match_method?: MatchMethod | null;
+  match_distance?: number | null;
+  reference_temp?: number | null;
+  delta_above_reference?: number | null;
+  priority?: string | null;
+  action_required?: string | null;
+};
+
+export type MatchedPair = {
+  id: string;
+  key: string;
+  displayName: string;
+  thermal: File;
+  rgb: File;
+};
+
+export type PairingIssue = {
+  id: string;
+  displayName: string;
+  fileNames: string[];
+  message: string;
+};
+
+type PairCandidate = {
+  file: File;
+  stem: string;
+  key: string;
+  kind: PairKind;
+};
+
+export type FailedPair = {
+  id: string;
+  displayName: string;
+  message: string;
+};
+
+export type AnalysisResult = {
+  id: string;
+  key: string;
+  displayName: string;
+  thermalFileName: string;
+  rgbFileName: string;
+  annotatedImage: string | null;
+  detections: Detection[];
+  latitude: number | null;
+  longitude: number | null;
+  thermalAvailable: boolean | null;
+  thermalError: string;
+  thermalMode: ThermalMode | null;
+  referenceTemperature: number | null;
+  message: string;
+  requestId: string;
+};
+
+export const DEGREE_C = "\u00B0C";
+
+const backendBaseUrl = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
+const THERMAL_TOKENS = new Set(["thermal", "therm", "infrared", "infra", "ir", "thm", "temp", "t"]);
+const RGB_TOKENS = new Set(["rgb", "visual", "visible", "wide", "vis", "v", "w"]);
+const ROLE_TOKENS = new Set([...THERMAL_TOKENS, ...RGB_TOKENS]);
+
+function getFileStem(fileName: string) {
+  const lastDot = fileName.lastIndexOf(".");
+  return lastDot > 0 ? fileName.slice(0, lastDot) : fileName;
+}
+
+function tokenizeStem(stem: string) {
+  const normalized = stem.normalize("NFKC").toLowerCase();
+  const sanitized = normalized.replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return sanitized ? sanitized.split(/\s+/) : [];
+}
+
+// ใหม่: ถ้ามีเลขในชื่อไฟล์ ให้ถือว่า "เลขท้าย" เป็น key หลักของคู่ภาพ
+// เช่น DJI_20251107103322_0035_T.JPG -> key = 0035
+function extractPairNumber(tokens: string[]) {
+  const numericTokens = tokens.filter((token) => /^\d+$/.test(token));
+  return numericTokens.length > 0 ? numericTokens[numericTokens.length - 1] : "";
+}
+
+function detectPairKind(tokens: string[]): PairKind {
+  let thermalScore = 0;
+  let rgbScore = 0;
+
+  for (const token of tokens) {
+    if (THERMAL_TOKENS.has(token)) {
+      thermalScore += token.length === 1 ? 1 : 3;
+    }
+    if (RGB_TOKENS.has(token)) {
+      rgbScore += token.length === 1 ? 1 : 3;
+    }
+  }
+
+  if (thermalScore > rgbScore) {
+    return "thermal";
+  }
+  if (rgbScore > thermalScore) {
+    return "rgb";
+  }
+  return "unknown";
+}
+
+function formatDisplayName(key: string, fallback: string) {
+  const trimmedKey = key.trim();
+  if (!trimmedKey) {
+    return fallback;
+  }
+
+  return trimmedKey
+    .split(/\s+/)
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(" ");
+}
+
+function toPairCandidate(file: File): PairCandidate {
+  const stem = getFileStem(file.name);
+  const tokens = tokenizeStem(stem);
+  const pairNumber = extractPairNumber(tokens);
+  const keyTokens = tokens.filter((token) => !ROLE_TOKENS.has(token));
+  const normalizedStem = stem.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+  return {
+    file,
+    stem,
+    key: pairNumber || keyTokens.join(" ").trim() || normalizedStem || stem.toLowerCase(),
+    kind: detectPairKind(tokens),
+  };
+}
+
+async function readImageArea(file: File) {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const nextImage = new Image();
+      nextImage.onload = () => resolve(nextImage);
+      nextImage.onerror = () => reject(new Error(`Cannot read ${file.name}`));
+      nextImage.src = objectUrl;
+    });
+
+    return image.naturalWidth * image.naturalHeight;
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function assignUnknownPairByImageSize(group: PairCandidate[]) {
+  if (group.length !== 2) {
+    return null;
+  }
+
+  const withArea = await Promise.all(
+    group.map(async (candidate) => ({
+      candidate,
+      area: await readImageArea(candidate.file),
+    })),
+  );
+
+  if (withArea.some((item) => item.area === null)) {
+    return null;
+  }
+
+  const sorted = [...withArea].sort((left, right) => {
+    const leftArea = left.area ?? 0;
+    const rightArea = right.area ?? 0;
+    if (leftArea !== rightArea) {
+      return leftArea - rightArea;
+    }
+    return left.candidate.file.name.localeCompare(right.candidate.file.name);
+  });
+
+  if ((sorted[0].area ?? 0) === (sorted[1].area ?? 0)) {
+    return null;
+  }
+
+  return {
+    thermal: sorted[0].candidate,
+    rgb: sorted[1].candidate,
+  };
+}
+
+export async function matchUploadPairs(files: File[]) {
+  const groups = new Map<string, PairCandidate[]>();
+  const pairs: MatchedPair[] = [];
+  const issues: PairingIssue[] = [];
+
+  const candidates = files
+    .map(toPairCandidate)
+    .sort((left, right) => left.key.localeCompare(right.key) || left.file.name.localeCompare(right.file.name));
+
+  for (const candidate of candidates) {
+    const existing = groups.get(candidate.key) ?? [];
+    existing.push(candidate);
+    groups.set(candidate.key, existing);
+  }
+
+  for (const [key, group] of groups.entries()) {
+    const thermals = group.filter((candidate) => candidate.kind === "thermal");
+    const rgbs = group.filter((candidate) => candidate.kind === "rgb");
+    const unknowns = group.filter((candidate) => candidate.kind === "unknown");
+
+    if (thermals.length === 0 && rgbs.length === 0 && unknowns.length === 2) {
+      const guessedPair = await assignUnknownPairByImageSize(unknowns);
+      if (guessedPair) {
+        thermals.push(guessedPair.thermal);
+        rgbs.push(guessedPair.rgb);
+        unknowns.length = 0;
+      }
+    }
+
+    if (unknowns.length === 1) {
+      if (thermals.length === 0 && rgbs.length === 1) {
+        thermals.push(unknowns.shift() as PairCandidate);
+      } else if (rgbs.length === 0 && thermals.length === 1) {
+        rgbs.push(unknowns.shift() as PairCandidate);
+      }
+    }
+
+    thermals.sort((left, right) => left.file.name.localeCompare(right.file.name));
+    rgbs.sort((left, right) => left.file.name.localeCompare(right.file.name));
+
+    const pairCount = Math.min(thermals.length, rgbs.length);
+
+    for (let index = 0; index < pairCount; index += 1) {
+      const thermal = thermals[index];
+      const rgb = rgbs[index];
+      const fallbackName = thermal?.stem ?? rgb?.stem ?? `Pair ${pairs.length + 1}`;
+
+      pairs.push({
+        id: `${key || "pair"}-${index + 1}`,
+        key,
+        displayName: formatDisplayName(key, fallbackName),
+        thermal: thermal.file,
+        rgb: rgb.file,
+      });
+    }
+
+    const leftovers = [...thermals.slice(pairCount), ...rgbs.slice(pairCount), ...unknowns];
+
+    if (leftovers.length > 0 || pairCount === 0) {
+      issues.push({
+        id: key || `issue-${issues.length + 1}`,
+        displayName: formatDisplayName(key, leftovers[0]?.stem ?? `Group ${issues.length + 1}`),
+        fileNames: group.map((candidate) => candidate.file.name),
+        message:
+          pairCount === 0
+            ? "Unable to auto-match this group. Files with the same running number should be uploaded as one T/V pair."
+            : "Some files in this group were skipped because more than one file used the same number.",
+      });
+    }
+  }
+
+  pairs.sort((left, right) => left.displayName.localeCompare(right.displayName));
+  issues.sort((left, right) => left.displayName.localeCompare(right.displayName));
+
+  return { pairs, issues };
+}
+
+function toAbsoluteImageUrl(rawImagePath: string) {
+  return rawImagePath.startsWith("data:") ? rawImagePath : `${backendBaseUrl}${rawImagePath}`;
+}
+
+export function createRequestId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  }
+  return Math.random().toString(36).slice(2, 10);
+}
+
+export function getResponseRequestId(responseData: unknown, headerRequestId: string) {
+  if (
+    typeof responseData === "object" &&
+    responseData !== null &&
+    "request_id" in responseData &&
+    typeof responseData.request_id === "string" &&
+    responseData.request_id.trim()
+  ) {
+    return responseData.request_id;
+  }
+  return headerRequestId;
+}
+
+export function describeBackendStep(step: string | null | undefined, details: Record<string, unknown> | null | undefined) {
+  switch (step) {
+    case "raw_upload_started":
+      return details?.kind === "rgb" ? "Uploading RGB image..." : "Uploading thermal image...";
+    case "raw_upload_finished":
+      return details?.kind === "rgb" ? "RGB image uploaded." : "Thermal image uploaded.";
+    case "analyze_started":
+      return "Analysis request accepted by backend.";
+    case "gps_checked":
+      return "Reading GPS metadata from thermal image...";
+    case "thermal_image_probe_started":
+      return "Opening thermal image...";
+    case "thermal_image_probe_finished":
+      return "Thermal image opened.";
+    case "rgb_image_probe_started":
+      return "Opening RGB image...";
+    case "rgb_image_probe_finished":
+      return "RGB image opened.";
+    case "images_opened":
+      return "Image sizes ready. Preparing model inference...";
+    case "thermal_model_started":
+      return "Running thermal hotspot model...";
+    case "thermal_model_done":
+      return "Thermal hotspot model finished.";
+    case "rgb_model_started":
+      return "Running RGB equipment model...";
+    case "rgb_model_done":
+      return "RGB equipment model finished.";
+    case "thermal_extraction_done":
+      return "Thermal temperature data extracted.";
+    case "thermal_matrix_ready":
+      return "Thermal matrix ready.";
+    case "annotation_image_open_started":
+      return "Preparing annotated thermal image...";
+    case "annotation_image_open_finished":
+      return "Annotated thermal image ready.";
+    case "matching_done":
+      return "Matching hotspot with equipment...";
+    case "annotated_image_saved":
+      return "Saving final result image...";
+    case "upload_completed":
+      return "Analysis complete.";
+    case "upload_client_disconnected":
+    case "raw_upload_client_disconnected":
+      return "Upload connection dropped before completion.";
+    case "upload_failed":
+    case "raw_upload_failed":
+    case "analyze_failed":
+    case "http_request_failed":
+      return "Backend reported a processing failure.";
+    default:
+      return step ? step.replace(/_/g, " ") : "";
+  }
+}
+
+export function toAnalysisResult(pair: MatchedPair, responseData: Record<string, unknown>, requestId: string): AnalysisResult {
+  let thermalMode: ThermalMode | null = null;
+
+  if (
+    responseData.thermal_mode === "none" ||
+    responseData.thermal_mode === "absolute" ||
+    responseData.thermal_mode === "relative"
+  ) {
+    thermalMode = responseData.thermal_mode;
+  }
+
+  return {
+    id: pair.id,
+    key: pair.key,
+    displayName: pair.displayName,
+    thermalFileName: pair.thermal.name,
+    rgbFileName: pair.rgb.name,
+    annotatedImage:
+      typeof responseData.annotated_image === "string" && responseData.annotated_image.trim()
+        ? toAbsoluteImageUrl(responseData.annotated_image)
+        : null,
+    detections: Array.isArray(responseData.detections) ? (responseData.detections as Detection[]) : [],
+    latitude: typeof responseData.latitude === "number" ? responseData.latitude : null,
+    longitude: typeof responseData.longitude === "number" ? responseData.longitude : null,
+    thermalAvailable: typeof responseData.thermal_available === "boolean" ? responseData.thermal_available : null,
+    thermalError: typeof responseData.thermal_error === "string" ? responseData.thermal_error : "",
+    thermalMode,
+    referenceTemperature:
+      typeof responseData.reference_temperature === "number" ? responseData.reference_temperature : null,
+    message: typeof responseData.message === "string" ? responseData.message : "",
+    requestId,
+  };
+}
+
+export function getEquipmentLabel(detection: Detection) {
+  return detection.equipment_class ?? "unknown";
+}
+
+function getTemperatureSummary(detection: Detection) {
+  if (typeof detection.max_temp === "number") {
+    return `${detection.max_temp.toFixed(1)} ${DEGREE_C}`;
+  }
+  if (typeof detection.max_raw === "number") {
+    return `Raw ${detection.max_raw.toFixed(1)}`;
+  }
+  return "Temperature unavailable";
+}
+
+function getPriorityRank(priority: string | null | undefined) {
+  const normalized = (priority ?? "").toLowerCase();
+  if (normalized.includes("priority 1")) {
+    return 1;
+  }
+  if (normalized.includes("priority 2")) {
+    return 2;
+  }
+  if (normalized.includes("priority 3")) {
+    return 3;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+function getHighestPriority(detections: Detection[]) {
+  let bestPriority: string | null = null;
+  let bestRank = Number.POSITIVE_INFINITY;
+
+  for (const detection of detections) {
+    const rank = getPriorityRank(detection.priority);
+    if (rank < bestRank) {
+      bestRank = rank;
+      bestPriority = detection.priority ?? null;
+    }
+  }
+
+  return bestPriority;
+}
+
+export function getTemperatureDetail(detection: Detection) {
+  if (
+    typeof detection.max_temp === "number" &&
+    typeof detection.min_temp === "number" &&
+    typeof detection.avg_temp === "number"
+  ) {
+    return `Max ${detection.max_temp.toFixed(1)} ${DEGREE_C} | Avg ${detection.avg_temp.toFixed(1)} ${DEGREE_C} | Min ${detection.min_temp.toFixed(1)} ${DEGREE_C}`;
+  }
+  if (
+    typeof detection.max_raw === "number" &&
+    typeof detection.min_raw === "number" &&
+    typeof detection.avg_raw === "number"
+  ) {
+    return `Max raw ${detection.max_raw.toFixed(1)} | Avg raw ${detection.avg_raw.toFixed(1)} | Min raw ${detection.min_raw.toFixed(1)}`;
+  }
+  return "Temperature data unavailable";
+}
+
+export function getHotspotSummary(detection: Detection) {
+  const parts = [getEquipmentLabel(detection), getTemperatureSummary(detection)];
+
+  if (detection.priority) {
+    parts.push(detection.priority);
+  }
+
+  return parts.join(" | ");
+}
+
+export function getMarkerId(pairIndex: number, detectionIndex: number) {
+  return `${pairIndex}:${detectionIndex}`;
+}
+
+export function buildMapMarkers(results: AnalysisResult[]): MapMarkerItem[] {
+  return results.flatMap((result, pairIndex) => {
+    if (result.latitude === null || result.longitude === null) {
+      return [];
+    }
+
+    const marker: MapMarkerItem = {
+      id: result.id || `${result.key || "pair"}-${pairIndex + 1}`,
+      lat: result.latitude,
+      lon: result.longitude,
+      pairLabel: result.displayName,
+      priority: getHighestPriority(result.detections),
+      hotspots: result.detections.map((detection, detectionIndex) => ({
+        hotspotLabel: `Hotspot ${detectionIndex + 1}`,
+        equipmentLabel: getEquipmentLabel(detection),
+        temperatureLabel: getTemperatureSummary(detection),
+        priority: detection.priority ?? null,
+        actionRequired: detection.action_required ?? null,
+      })),
+    };
+
+    return [marker];
+  });
+}
