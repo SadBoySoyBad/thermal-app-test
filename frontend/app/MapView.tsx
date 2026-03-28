@@ -108,14 +108,15 @@ function FocusMap({
 }
 
 export default function MapView({ markers, selectedMarkerId, onSelectMarker }: Props) {
-  const selectedMarker = markers.find((marker) => marker.id === selectedMarkerId) ?? markers[0] ?? null;
+  // ถ้ายังไม่มี hotspot ที่มี GPS ก็ไม่ต้อง render Leaflet
+  if (markers.length === 0) {
+    return <div className="mapPlaceholder">No hotspot with GPS is available for the map yet.</div>;
+  }
+
+  const selectedMarker = markers.find((marker) => marker.id === selectedMarkerId) ?? markers[0];
   const markerRefs = useRef<Record<string, LeafletMarker | null>>({});
 
   useEffect(() => {
-    if (!selectedMarker) {
-      return;
-    }
-
     for (const marker of markers) {
       const markerInstance = markerRefs.current[marker.id];
       if (!markerInstance) {
@@ -128,12 +129,7 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
         markerInstance.closePopup();
       }
     }
-  }, [markers, selectedMarker]);
-
-  // ถ้ายังไม่มี hotspot ที่มี GPS ก็ไม่ต้อง render Leaflet
-  if (markers.length === 0 || !selectedMarker) {
-    return <div className="mapPlaceholder">No hotspot with GPS is available for the map yet.</div>;
-  }
+  }, [markers, selectedMarker.id]);
 
   return (
     // ใช้ marker 1 ตัวแทนภาพ 1 รูป
