@@ -1,12 +1,9 @@
 "use client";
 
-// หน้า map นี้รันเฉพาะฝั่ง browser
-// เพราะ react-leaflet ต้องใช้ window / document
-import { DivIcon, type Marker as LeafletMarker } from "leaflet";
+import * as Leaflet from "leaflet";
 import { MapContainer, Marker, Popup, TileLayer, useMap } from "react-leaflet";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ComponentProps } from "react";
 
-// marker 1 จุด = 1 รูปบนแผนที่
 export type MapMarkerItem = {
   id: string;
   lat: number;
@@ -28,7 +25,30 @@ type Props = {
   onSelectMarker?: (markerId: string) => void;
 };
 
-// map priority -> สี marker
+type PopupCapableMarker = {
+  openPopup: () => void;
+  closePopup: () => void;
+};
+
+type DivIconFactory = {
+  DivIcon: new (options: {
+    className: string;
+    html: string;
+    iconSize: [number, number];
+    iconAnchor: [number, number];
+    popupAnchor: [number, number];
+  }) => unknown;
+};
+
+type MapController = {
+  setView: (center: [number, number], zoom: number, options?: { animate?: boolean }) => void;
+  getZoom: () => number;
+  fitBounds: (bounds: [number, number][], options?: { padding?: [number, number] }) => void;
+};
+
+type MarkerIconLike = NonNullable<ComponentProps<typeof Marker>["icon"]>;
+type PopupPropsLike = ComponentProps<typeof Popup>;
+
 function getPriorityClass(priority: string | null) {
   const normalized = (priority ?? "").toLowerCase();
   if (normalized.includes("priority 1")) {
@@ -57,19 +77,19 @@ function getPopupPriorityClass(priority: string | null) {
   return "mapPopupPriority mapPopupPriorityDefault";
 }
 
-// ใช้ DivIcon เพื่อให้ปรับสี/สถานะ selected ผ่าน CSS ได้ง่าย
-function createMarkerIcon(priority: string | null, selected: boolean) {
+function createMarkerIcon(priority: string | null, selected: boolean): MarkerIconLike {
   const markerClass = getPriorityClass(priority);
-  return new DivIcon({
+  const leafletRuntime = Leaflet as unknown as DivIconFactory;
+
+  return new leafletRuntime.DivIcon({
     className: "mapMarkerShell",
     html: `<span class="mapMarker ${markerClass} ${selected ? "selected" : ""}"></span>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
     popupAnchor: [0, -28],
-  });
+  }) as MarkerIconLike;
 }
 
-// sync มุมมองแผนที่ตาม marker ที่กำลังเลือกอยู่
 function FocusMap({
   markers,
   selectedMarkerId,
@@ -77,7 +97,7 @@ function FocusMap({
   markers: MapMarkerItem[];
   selectedMarkerId: string | null;
 }) {
-  const map = useMap();
+  const map = useMap() as unknown as MapController;
 
   useEffect(() => {
     if (markers.length === 0) {
@@ -108,15 +128,22 @@ function FocusMap({
 }
 
 export default function MapView({ markers, selectedMarkerId, onSelectMarker }: Props) {
-  // ถ้ายังไม่มี hotspot ที่มี GPS ก็ไม่ต้อง render Leaflet
-  if (markers.length === 0) {
-    return <div className="mapPlaceholder">No hotspot with GPS is available for the map yet.</div>;
-  }
-
-  const selectedMarker = markers.find((marker) => marker.id === selectedMarkerId) ?? markers[0];
-  const markerRefs = useRef<Record<string, LeafletMarker | null>>({});
+  const selectedMarker = markers.find((marker) => marker.id === selectedMarkerId) ?? markers[0] ?? null;
+  const markerRefs = useRef<Record<string, PopupCapableMarker | null>>({});
+  const popupProps = {
+    className: "mapPopup",
+    maxWidth: 296,
+    minWidth: 248,
+    keepInView: true,
+    autoPanPaddingTopLeft: [24, 24],
+    autoPanPaddingBottomRight: [24, 24],
+  } as unknown as PopupPropsLike;
 
   useEffect(() => {
+    if (!selectedMarker) {
+      return;
+    }
+
     for (const marker of markers) {
       const markerInstance = markerRefs.current[marker.id];
       if (!markerInstance) {
@@ -129,10 +156,13 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
         markerInstance.closePopup();
       }
     }
-  }, [markers, selectedMarker.id]);
+  }, [markers, selectedMarker]);
+
+  if (markers.length === 0 || !selectedMarker) {
+    return <div className="mapPlaceholder">No hotspot with GPS is available for the map yet.</div>;
+  }
 
   return (
-    // ใช้ marker 1 ตัวแทนภาพ 1 รูป
     <MapContainer center={[selectedMarker.lat, selectedMarker.lon]} zoom={18} className="map">
       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
       <FocusMap markers={markers} selectedMarkerId={selectedMarkerId} />
@@ -143,7 +173,7 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
           position={[marker.lat, marker.lon]}
           icon={createMarkerIcon(marker.priority, marker.id === selectedMarkerId)}
           ref={(markerInstance) => {
-            markerRefs.current[marker.id] = markerInstance;
+            markerRefs.current[marker.id] = markerInstance as PopupCapableMarker | null;
           }}
           eventHandlers={{
             click: () => {
@@ -151,14 +181,7 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
             },
           }}
         >
-          <Popup
-            className="mapPopup"
-            maxWidth={296}
-            minWidth={248}
-            keepInView
-            autoPanPaddingTopLeft={[24, 24]}
-            autoPanPaddingBottomRight={[24, 24]}
-          >
+          <Popup {...popupProps}>
             <div className="mapPopupBody">
               <div className="mapPopupHeader">
                 <h3 className="mapPopupTitle">{marker.pairLabel}</h3>
