@@ -1,35 +1,69 @@
 import type { MapMarkerItem } from "./MapView";
 
-// helper file นี้เก็บ type + ฟังก์ชันย่อยของหน้า upload
-// เพื่อไม่ให้ page.tsx ยาวเกินไป
+// ไฟล์นี้เป็นไฟล์ช่วยของหน้า upload
+// เอาไว้เก็บ type และฟังก์ชันย่อยต่าง ๆ
+// เพื่อไม่ให้ไฟล์ page.tsx ยาวและรกเกินไป
+
+// วิธีที่ระบบใช้บอกว่า hotspot ไปตรงกับอุปกรณ์แบบไหน
 export type MatchMethod = "inside" | "nearest" | "unknown";
+
+// รูปแบบข้อมูล thermal ที่ได้กลับมา
+// none = ไม่มีข้อมูลอุณหภูมิ
+// absolute = มีอุณหภูมิจริง
+// relative = มีแค่ค่าความร้อนแบบเปรียบเทียบ
 export type ThermalMode = "none" | "absolute" | "relative";
+
+// ประเภทไฟล์ที่ระบบมองเห็น
 type PairKind = "thermal" | "rgb" | "unknown";
 
+// ข้อมูลของ hotspot / detection 1 จุด
 export type Detection = {
+  // ตำแหน่งกรอบของจุดที่ตรวจเจอ
   bbox: [number, number, number, number];
+
+  // กรอบของ hotspot บนภาพ thermal
   thermal_bbox?: [number, number, number, number];
+
+  // ความมั่นใจของโมเดลว่าตรงนี้คือ hotspot
   hotspot_confidence?: number | null;
+
+  // จุดกึ่งกลางของ hotspot
   hotspot_center?: [number, number] | null;
+
+  // อุณหภูมิสูงสุด ต่ำสุด และเฉลี่ย
   max_temp: number | null;
   min_temp: number | null;
   avg_temp: number | null;
+
+  // ถ้าไม่มีอุณหภูมิจริง อาจได้ค่า raw มาแทน
   max_raw?: number | null;
   min_raw?: number | null;
   avg_raw?: number | null;
+
+  // จุดที่ร้อนสุด / เย็นสุด
   max_point?: [number, number] | null;
   min_point?: [number, number] | null;
+
+  // ข้อมูลอุปกรณ์ที่จับคู่กับ hotspot ได้
   equipment_class?: string | null;
   equipment_confidence?: number | null;
   equipment_bbox?: [number, number, number, number] | null;
+
+  // ระบบจับคู่วิธีไหน
   match_method?: MatchMethod | null;
   match_distance?: number | null;
+
+  // ค่าอ้างอิงและความต่างจากค่าอ้างอิง
   reference_temp?: number | null;
   delta_above_reference?: number | null;
+
+  // ระดับความสำคัญ และสิ่งที่ควรทำ
   priority?: string | null;
   action_required?: string | null;
 };
 
+// คู่ไฟล์ที่จับคู่สำเร็จแล้ว
+// 1 คู่ = thermal 1 ไฟล์ + rgb 1 ไฟล์
 export type MatchedPair = {
   id: string;
   key: string;
@@ -38,6 +72,7 @@ export type MatchedPair = {
   rgb: File;
 };
 
+// ปัญหาที่พบตอนจับคู่ไฟล์
 export type PairingIssue = {
   id: string;
   displayName: string;
@@ -45,19 +80,22 @@ export type PairingIssue = {
   message: string;
 };
 
+// ข้อมูลชั่วคราวของไฟล์แต่ละไฟล์ ก่อนเอาไปจับคู่
 type PairCandidate = {
   file: File;
-  stem: string;
-  key: string;
+  stem: string; // ชื่อไฟล์แบบไม่มีนามสกุล
+  key: string;  // key ที่ใช้จัดกลุ่ม
   kind: PairKind;
 };
 
+// คู่ไฟล์ที่วิเคราะห์ไม่ผ่าน
 export type FailedPair = {
   id: string;
   displayName: string;
   message: string;
 };
 
+// ผลวิเคราะห์ที่ frontend จะเอาไปใช้ต่อ
 export type AnalysisResult = {
   id: string;
   key: string;
@@ -76,31 +114,45 @@ export type AnalysisResult = {
   requestId: string;
 };
 
+// สัญลักษณ์องศาเซลเซียส
 export const DEGREE_C = "\u00B0C";
 
+// URL หลักของ backend
+// ถ้าไม่ได้ตั้ง env ไว้ จะใช้ localhost:8000
 const backendBaseUrl = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
+
+// คำที่ระบบมองว่าเป็นไฟล์ thermal
 const THERMAL_TOKENS = new Set(["thermal", "therm", "infrared", "infra", "ir", "thm", "temp", "t"]);
+
+// คำที่ระบบมองว่าเป็นไฟล์ rgb / ภาพปกติ
 const RGB_TOKENS = new Set(["rgb", "visual", "visible", "wide", "vis", "v", "w"]);
+
+// รวมคำทั้งหมดที่ใช้บอกบทบาทของไฟล์
 const ROLE_TOKENS = new Set([...THERMAL_TOKENS, ...RGB_TOKENS]);
 
+// ตัดนามสกุลไฟล์ออก
+// เช่น abc.jpg -> abc
 function getFileStem(fileName: string) {
   const lastDot = fileName.lastIndexOf(".");
   return lastDot > 0 ? fileName.slice(0, lastDot) : fileName;
 }
 
+// แยกชื่อไฟล์ออกเป็นคำย่อย ๆ
+// เพื่อเอาไปเดาว่าไฟล์นี้เป็น thermal หรือ rgb
 function tokenizeStem(stem: string) {
   const normalized = stem.normalize("NFKC").toLowerCase();
   const sanitized = normalized.replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   return sanitized ? sanitized.split(/\s+/) : [];
 }
 
-// ใหม่: ถ้ามีเลขในชื่อไฟล์ ให้ถือว่า "เลขท้าย" เป็น key หลักของคู่ภาพ
-// เช่น DJI_20251107103322_0035_T.JPG -> key = 0035
+// ถ้าชื่อไฟล์มีตัวเลข จะเอา เลขตัวท้าย มาใช้เป็น key หลัก
+// เช่น DJI_xxx_0035_T.JPG -> key = 0035
 function extractPairNumber(tokens: string[]) {
   const numericTokens = tokens.filter((token) => /^\d+$/.test(token));
   return numericTokens.length > 0 ? numericTokens[numericTokens.length - 1] : "";
 }
 
+// ดูจากชื่อไฟล์ว่าเป็น thermal หรือ rgb
 function detectPairKind(tokens: string[]): PairKind {
   let thermalScore = 0;
   let rgbScore = 0;
@@ -123,6 +175,7 @@ function detectPairKind(tokens: string[]): PairKind {
   return "unknown";
 }
 
+// ทำชื่อที่ใช้แสดงผลให้อ่านง่ายขึ้น
 function formatDisplayName(key: string, fallback: string) {
   const trimmedKey = key.trim();
   if (!trimmedKey) {
@@ -135,11 +188,15 @@ function formatDisplayName(key: string, fallback: string) {
     .join(" ");
 }
 
+// แปลงไฟล์ 1 ไฟล์ ให้เป็นข้อมูลที่พร้อมใช้สำหรับจับคู่
 function toPairCandidate(file: File): PairCandidate {
   const stem = getFileStem(file.name);
   const tokens = tokenizeStem(stem);
   const pairNumber = extractPairNumber(tokens);
+
+  // ตัดคำพวก thermal / rgb ออก เพื่อให้เหลือ key กลาง
   const keyTokens = tokens.filter((token) => !ROLE_TOKENS.has(token));
+
   const normalizedStem = stem.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
   return {
@@ -150,6 +207,8 @@ function toPairCandidate(file: File): PairCandidate {
   };
 }
 
+// อ่านขนาดรูป (กว้าง x สูง)
+// ใช้ช่วยเดาว่าไฟล์ไหนน่าจะเป็น thermal / rgb
 async function readImageArea(file: File) {
   const objectUrl = URL.createObjectURL(file);
 
@@ -169,6 +228,9 @@ async function readImageArea(file: File) {
   }
 }
 
+// กรณีชื่อไฟล์บอกไม่ชัดว่าอะไรคือ thermal / rgb
+// ถ้ามีแค่ 2 ไฟล์ในกลุ่ม จะลองเดาจากขนาดภาพ
+// โดยมองว่าภาพที่เล็กกว่าน่าจะเป็น thermal
 async function assignUnknownPairByImageSize(group: PairCandidate[]) {
   if (group.length !== 2) {
     return null;
@@ -194,6 +256,7 @@ async function assignUnknownPairByImageSize(group: PairCandidate[]) {
     return left.candidate.file.name.localeCompare(right.candidate.file.name);
   });
 
+  // ถ้าขนาดเท่ากัน เดาไม่ได้
   if ((sorted[0].area ?? 0) === (sorted[1].area ?? 0)) {
     return null;
   }
@@ -204,26 +267,32 @@ async function assignUnknownPairByImageSize(group: PairCandidate[]) {
   };
 }
 
+// ฟังก์ชันหลักของการจับคู่ไฟล์
+// รับไฟล์ทั้งหมดเข้ามา แล้วพยายามจับว่าไฟล์ไหนเป็นคู่กัน
 export async function matchUploadPairs(files: File[]) {
   const groups = new Map<string, PairCandidate[]>();
   const pairs: MatchedPair[] = [];
   const issues: PairingIssue[] = [];
 
+  // แปลงทุกไฟล์ให้พร้อมใช้ แล้วเรียงลำดับ
   const candidates = files
     .map(toPairCandidate)
     .sort((left, right) => left.key.localeCompare(right.key) || left.file.name.localeCompare(right.file.name));
 
+  // จัดกลุ่มตาม key
   for (const candidate of candidates) {
     const existing = groups.get(candidate.key) ?? [];
     existing.push(candidate);
     groups.set(candidate.key, existing);
   }
 
+  // ทำทีละกลุ่ม
   for (const [key, group] of groups.entries()) {
     const thermals = group.filter((candidate) => candidate.kind === "thermal");
     const rgbs = group.filter((candidate) => candidate.kind === "rgb");
     const unknowns = group.filter((candidate) => candidate.kind === "unknown");
 
+    // ถ้ายังไม่รู้ทั้งคู่ และมี 2 ไฟล์พอดี ให้เดาจากขนาดรูป
     if (thermals.length === 0 && rgbs.length === 0 && unknowns.length === 2) {
       const guessedPair = await assignUnknownPairByImageSize(unknowns);
       if (guessedPair) {
@@ -233,6 +302,8 @@ export async function matchUploadPairs(files: File[]) {
       }
     }
 
+    // ถ้ามี unknown 1 ไฟล์ และอีกฝั่งมีอยู่แล้ว 1 ไฟล์
+    // ก็เดาให้อีกไฟล์เป็นคู่ตรงข้าม
     if (unknowns.length === 1) {
       if (thermals.length === 0 && rgbs.length === 1) {
         thermals.push(unknowns.shift() as PairCandidate);
@@ -241,11 +312,14 @@ export async function matchUploadPairs(files: File[]) {
       }
     }
 
+    // เรียงชื่อก่อน เพื่อให้จับคู่ได้คงที่
     thermals.sort((left, right) => left.file.name.localeCompare(right.file.name));
     rgbs.sort((left, right) => left.file.name.localeCompare(right.file.name));
 
+    // จำนวนคู่ที่ทำได้จริง
     const pairCount = Math.min(thermals.length, rgbs.length);
 
+    // สร้างคู่ไฟล์
     for (let index = 0; index < pairCount; index += 1) {
       const thermal = thermals[index];
       const rgb = rgbs[index];
@@ -260,6 +334,7 @@ export async function matchUploadPairs(files: File[]) {
       });
     }
 
+    // ไฟล์ที่เหลือและจับคู่ไม่ได้
     const leftovers = [...thermals.slice(pairCount), ...rgbs.slice(pairCount), ...unknowns];
 
     if (leftovers.length > 0 || pairCount === 0) {
@@ -281,10 +356,13 @@ export async function matchUploadPairs(files: File[]) {
   return { pairs, issues };
 }
 
+// ถ้า backend ส่ง data URL มาอยู่แล้ว ก็ใช้ตรงนั้นได้เลย
+// ถ้าเป็น path ธรรมดา ก็เติม backend URL ข้างหน้า
 function toAbsoluteImageUrl(rawImagePath: string) {
   return rawImagePath.startsWith("data:") ? rawImagePath : `${backendBaseUrl}${rawImagePath}`;
 }
 
+// สร้าง request id ไว้ติดตามงาน
 export function createRequestId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID().replace(/-/g, "").slice(0, 8);
@@ -292,6 +370,9 @@ export function createRequestId() {
   return Math.random().toString(36).slice(2, 10);
 }
 
+// เลือก request id ที่จะใช้จริง
+// ถ้า backend ส่ง request_id กลับมา ก็ใช้ของ backend
+// ถ้าไม่ส่ง ก็ใช้ค่าเดิมจาก header
 export function getResponseRequestId(responseData: unknown, headerRequestId: string) {
   if (
     typeof responseData === "object" &&
@@ -305,6 +386,7 @@ export function getResponseRequestId(responseData: unknown, headerRequestId: str
   return headerRequestId;
 }
 
+// แปลชื่อ step จาก backend ให้เป็นข้อความที่คนอ่านเข้าใจง่าย
 export function describeBackendStep(step: string | null | undefined, details: Record<string, unknown> | null | undefined) {
   switch (step) {
     case "raw_upload_started":
@@ -360,6 +442,8 @@ export function describeBackendStep(step: string | null | undefined, details: Re
   }
 }
 
+// แปลงข้อมูลที่ backend ส่งกลับมา
+// ให้เป็นรูปแบบที่หน้าเว็บใช้งานง่าย
 export function toAnalysisResult(pair: MatchedPair, responseData: Record<string, unknown>, requestId: string): AnalysisResult {
   let thermalMode: ThermalMode | null = null;
 
@@ -394,10 +478,12 @@ export function toAnalysisResult(pair: MatchedPair, responseData: Record<string,
   };
 }
 
+// คืนชื่ออุปกรณ์ ถ้าไม่มีข้อมูลก็ใช้ unknown
 export function getEquipmentLabel(detection: Detection) {
   return detection.equipment_class ?? "unknown";
 }
 
+// สรุปอุณหภูมิแบบสั้น ๆ
 function getTemperatureSummary(detection: Detection) {
   if (typeof detection.max_temp === "number") {
     return `${detection.max_temp.toFixed(1)} ${DEGREE_C}`;
@@ -408,6 +494,8 @@ function getTemperatureSummary(detection: Detection) {
   return "Temperature unavailable";
 }
 
+// เปลี่ยนข้อความ priority ให้เป็นตัวเลข
+// เพื่อจะได้เทียบได้ว่าอันไหนสำคัญกว่า
 function getPriorityRank(priority: string | null | undefined) {
   const normalized = (priority ?? "").toLowerCase();
   if (normalized.includes("priority 1")) {
@@ -422,6 +510,7 @@ function getPriorityRank(priority: string | null | undefined) {
   return Number.POSITIVE_INFINITY;
 }
 
+// หาว่าใน detection ทั้งหมด อันไหนมี priority สูงสุด
 function getHighestPriority(detections: Detection[]) {
   let bestPriority: string | null = null;
   let bestRank = Number.POSITIVE_INFINITY;
@@ -437,6 +526,7 @@ function getHighestPriority(detections: Detection[]) {
   return bestPriority;
 }
 
+// สรุปค่าอุณหภูมิแบบเต็ม
 export function getTemperatureDetail(detection: Detection) {
   if (
     typeof detection.max_temp === "number" &&
@@ -455,6 +545,7 @@ export function getTemperatureDetail(detection: Detection) {
   return "Temperature data unavailable";
 }
 
+// สรุป hotspot แบบสั้น ๆ สำหรับแสดงหน้า UI
 export function getHotspotSummary(detection: Detection) {
   const parts = [getEquipmentLabel(detection), getTemperatureSummary(detection)];
 
@@ -465,12 +556,15 @@ export function getHotspotSummary(detection: Detection) {
   return parts.join(" | ");
 }
 
+// สร้าง id ของ hotspot marker
 export function getMarkerId(pairIndex: number, detectionIndex: number) {
   return `${pairIndex}:${detectionIndex}`;
 }
 
+// แปลงผลวิเคราะห์ทั้งหมดให้เป็น marker สำหรับแผนที่
 export function buildMapMarkers(results: AnalysisResult[]): MapMarkerItem[] {
   return results.flatMap((result, pairIndex) => {
+    // ถ้าไม่มีพิกัด ก็ไม่ต้องสร้าง marker
     if (result.latitude === null || result.longitude === null) {
       return [];
     }

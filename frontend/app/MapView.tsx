@@ -1,35 +1,52 @@
 "use client";
+// บอก Next.js ว่าไฟล์นี้ต้องรันฝั่ง Browser (ไม่ใช่ฝั่ง Server)
+// เพราะ Leaflet ใช้ window / document ซึ่ง Server ใช้ไม่ได้
 
+// นำทุกอย่างจาก leaflet มาใช้ในชื่อ Leaflet
+// ใช้ในไฟล์นี้เพื่อสร้าง DivIcon แบบ custom สำหรับหมุด
 import * as Leaflet from "leaflet";
-import { MapContainer, Marker, Popup, TileLayer, useMap } from "react-leaflet";
-import { useEffect, useRef, type ComponentProps } from "react";
 
+// นำ component ที่จำเป็นมาจาก react-leaflet
+// MapContainer = กล่องแผนที่
+// TileLayer = ชั้นแผนที่ (พื้นหลัง)
+// Marker = หมุดปักตำแหน่ง
+// Popup = กล่องข้อมูลที่เด้งขึ้นมาเมื่อกดหรือเลือกหมุด
+// useMap = ใช้เข้าถึงตัวแผนที่โดยตรง เพื่อสั่งเลื่อนหรือซูมแผนที่ได้
+import { MapContainer, Marker, Popup, TileLayer, useMap } from "react-leaflet";
+
+// นำ hook และ type จาก React มาใช้
+// useEffect = ใช้ทำงานบางอย่างตอน component render หรือเมื่อค่ามีการเปลี่ยน
+// useState = ใช้เก็บสถานะภายใน component
+// ComponentProps = ใช้ดึง type ของ props จาก component อื่นมาใช้อ้างอิง
+import { useEffect, useState, type ComponentProps } from "react";
+
+// ข้อมูลของหมุด 1 จุดบนแผนที่
+// 1 หมุดจะเก็บตำแหน่ง ชื่อคู่ภาพ ระดับความสำคัญ
+// และรายการ hotspot ที่อยู่ในจุดนั้น
 export type MapMarkerItem = {
-  id: string;
-  lat: number;
-  lon: number;
-  pairLabel: string;
-  priority: string | null;
+  id: string; // id ของหมุด ใช้แยกว่าหมุดไหนคือหมุดไหน
+  lat: number; // ละติจูด
+  lon: number; // ลองจิจูด
+  pairLabel: string; // ชื่อที่ใช้แสดงของภาพคู่นั้น
+  priority: string | null; // ระดับความสำคัญรวมของหมุด เช่น Priority 1
   hotspots: Array<{
-    hotspotLabel: string;
-    equipmentLabel: string;
-    temperatureLabel: string;
-    priority: string | null;
-    actionRequired: string | null;
+    hotspotLabel: string; // ชื่อ hotspot
+    equipmentLabel: string; // ชื่ออุปกรณ์ที่เกี่ยวข้อง
+    temperatureLabel: string; // ข้อความอุณหภูมิ เช่น 52.1 °C
+    priority: string | null; // ระดับความสำคัญของ hotspot นี้
+    actionRequired: string | null; // สิ่งที่ควรทำ เช่น Immediate repair
   }>;
 };
 
+// กำหนดชนิดของข้อมูล (Props) ที่ component นี้ต้องรับเข้ามา
 type Props = {
-  markers: MapMarkerItem[];
-  selectedMarkerId: string | null;
-  onSelectMarker?: (markerId: string) => void;
+  markers: MapMarkerItem[]; // รายการหมุดทั้งหมดที่จะเอาไปแสดงบนแผนที่
+  selectedMarkerId: string | null; // id ของหมุดที่กำลังถูกเลือกอยู่
+  onSelectMarker?: (markerId: string) => void; // function ที่เรียกกลับเมื่อผู้ใช้เลือกหมุด
 };
 
-type PopupCapableMarker = {
-  openPopup: () => void;
-  closePopup: () => void;
-};
-
+// type นี้ใช้บอกรูปแบบของ DivIcon จาก Leaflet
+// เพราะเราจะสร้างหมุดแบบกำหนดหน้าตาเอง
 type DivIconFactory = {
   DivIcon: new (options: {
     className: string;
@@ -40,17 +57,23 @@ type DivIconFactory = {
   }) => unknown;
 };
 
+// type นี้อธิบาย object แผนที่ที่เราจะใช้จริงแค่บางเมธอด
+// setView = สั่งย้ายตำแหน่งแผนที่
+// getZoom = ดูระดับซูมปัจจุบัน
 type MapController = {
   setView: (center: [number, number], zoom: number, options?: { animate?: boolean }) => void;
   getZoom: () => number;
-  fitBounds: (bounds: [number, number][], options?: { padding?: [number, number] }) => void;
 };
 
+// ดึง type ของ icon ที่ Marker ของ react-leaflet รับได้
+// เอาไว้ใช้เป็นชนิดข้อมูลของหมุด custom icon
 type MarkerIconLike = NonNullable<ComponentProps<typeof Marker>["icon"]>;
-type PopupPropsLike = ComponentProps<typeof Popup>;
 
+// ดูว่า priority เป็นระดับไหน
+// แล้วคืนชื่อ class CSS สำหรับตกแต่งสีของหมุดบนแผนที่
 function getPriorityClass(priority: string | null) {
   const normalized = (priority ?? "").toLowerCase();
+
   if (normalized.includes("priority 1")) {
     return "mapMarkerP1";
   }
@@ -60,11 +83,16 @@ function getPriorityClass(priority: string | null) {
   if (normalized.includes("priority 3")) {
     return "mapMarkerP3";
   }
+
+  // ถ้าไม่มี priority ชัดเจน ใช้ style ปกติ
   return "mapMarkerDefault";
 }
 
+// คล้ายกับ getPriorityClass
+// แต่ฟังก์ชันนี้ใช้กับ badge หรือข้อความ priority ใน popup
 function getPopupPriorityClass(priority: string | null) {
   const normalized = (priority ?? "").toLowerCase();
+
   if (normalized.includes("priority 1")) {
     return "mapPopupPriority mapPopupPriorityP1";
   }
@@ -74,9 +102,14 @@ function getPopupPriorityClass(priority: string | null) {
   if (normalized.includes("priority 3")) {
     return "mapPopupPriority mapPopupPriorityP3";
   }
+
   return "mapPopupPriority mapPopupPriorityDefault";
 }
 
+// สร้างรูปหมุด (Marker Icon)
+// ของเดิมใช้รูปมาตรฐานจากไฟล์ภาพใน public
+// แต่โค้ดใหม่นี้เปลี่ยนเป็นสร้างหมุดจาก HTML + CSS แทน
+// ข้อดีคือเปลี่ยนสี/สถานะ selected ได้ง่ายกว่า
 function createMarkerIcon(priority: string | null, selected: boolean): MarkerIconLike {
   const markerClass = getPriorityClass(priority);
   const leafletRuntime = Leaflet as unknown as DivIconFactory;
@@ -86,139 +119,228 @@ function createMarkerIcon(priority: string | null, selected: boolean): MarkerIco
     html: `<span class="mapMarker ${markerClass} ${selected ? "selected" : ""}"></span>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
-    popupAnchor: [0, -28],
+    popupAnchor: [0, -12],
   }) as MarkerIconLike;
 }
 
+// component ย่อยตัวนี้มีหน้าที่พาแผนที่เลื่อนไปหาหมุดที่ถูกเลือก
+// เวลาผู้ใช้เลือก marker ใหม่ แผนที่จะขยับไปหาตำแหน่งนั้นอัตโนมัติ
 function FocusMap({
-  markers,
-  selectedMarkerId,
+  selectedMarker,
 }: {
-  markers: MapMarkerItem[];
-  selectedMarkerId: string | null;
+  selectedMarker: MapMarkerItem;
 }) {
   const map = useMap() as unknown as MapController;
 
   useEffect(() => {
-    if (markers.length === 0) {
-      return;
-    }
-
-    const selectedMarker = markers.find((marker) => marker.id === selectedMarkerId) ?? null;
-
-    if (selectedMarker) {
-      map.setView([selectedMarker.lat, selectedMarker.lon], Math.max(map.getZoom(), 18), {
-        animate: true,
-      });
-      return;
-    }
-
-    if (markers.length === 1) {
-      map.setView([markers[0].lat, markers[0].lon], 18);
-      return;
-    }
-
-    map.fitBounds(
-      markers.map((marker) => [marker.lat, marker.lon] as [number, number]),
-      { padding: [36, 36] },
-    );
-  }, [map, markers, selectedMarkerId]);
+    map.setView([selectedMarker.lat, selectedMarker.lon], Math.max(map.getZoom(), 18), {
+      animate: true,
+    });
+  }, [map, selectedMarker.lat, selectedMarker.lon]);
 
   return null;
 }
 
+// สร้าง component ชื่อ MapView
+// รับข้อมูลหมุดทั้งหมด หมุดที่เลือกอยู่ และ function สำหรับเปลี่ยนหมุดที่เลือก
 export default function MapView({ markers, selectedMarkerId, onSelectMarker }: Props) {
+  // หา marker ที่กำลังถูกเลือก
+  // ถ้าไม่เจอ จะใช้ marker ตัวแรกแทน
+  // ถ้าไม่มี marker เลย จะได้ null
   const selectedMarker = markers.find((marker) => marker.id === selectedMarkerId) ?? markers[0] ?? null;
-  const markerRefs = useRef<Record<string, PopupCapableMarker | null>>({});
-  const popupProps = {
-    className: "mapPopup",
-    maxWidth: 296,
-    minWidth: 248,
-    keepInView: true,
-    autoPanPaddingTopLeft: [24, 24],
-    autoPanPaddingBottomRight: [24, 24],
-  } as unknown as PopupPropsLike;
 
+  // เก็บ id ของ marker ที่ถูกเลือกจริง ๆ
+  const effectiveSelectedMarkerId = selectedMarker?.id ?? null;
+
+  // เก็บ id ของ marker ที่ผู้ใช้กดปิด popup ไปแล้ว
+  // เพื่อไม่ให้ popup เด้งกลับมาทันที
+  const [dismissedMarkerId, setDismissedMarkerId] = useState<string | null>(null);
+
+  // ใช้เช็กว่าหน้าจอเล็กไหม
+  // ถ้าหน้าจอเล็ก จะเปิด popup แบบ compact
+  const [isCompactPopup, setIsCompactPopup] = useState(false);
+
+  // ใช้เก็บว่าใน popup แบบ compact กำลังดู hotspot ตัวที่เท่าไร
+  const [compactHotspotIndex, setCompactHotspotIndex] = useState(0);
+
+  // เช็กขนาดหน้าจอ
+  // ถ้าหน้าจอเล็กกว่า 640px จะใช้ popup แบบ compact
   useEffect(() => {
-    if (!selectedMarker) {
-      return;
+    const mediaQuery = window.matchMedia("(max-width: 640px)");
+
+    const syncPopupMode = () => {
+      setIsCompactPopup(mediaQuery.matches);
+    };
+
+    syncPopupMode();
+
+    // browser ใหม่ใช้ addEventListener
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", syncPopupMode);
+      return () => {
+        mediaQuery.removeEventListener("change", syncPopupMode);
+      };
     }
 
-    for (const marker of markers) {
-      const markerInstance = markerRefs.current[marker.id];
-      if (!markerInstance) {
-        continue;
-      }
+    // browser เก่าใช้ addListener
+    mediaQuery.addListener(syncPopupMode);
+    return () => {
+      mediaQuery.removeListener(syncPopupMode);
+    };
+  }, []);
 
-      if (marker.id === selectedMarker.id) {
-        markerInstance.openPopup();
-      } else {
-        markerInstance.closePopup();
-      }
-    }
-  }, [markers, selectedMarker]);
+  // เมื่อเปลี่ยน marker ที่เลือก หรือเปลี่ยนโหมด compact
+  // ให้กลับไปเริ่มดู hotspot ตัวแรกใหม่
+  useEffect(() => {
+    setCompactHotspotIndex(0);
+  }, [selectedMarker?.id, isCompactPopup]);
 
-  if (markers.length === 0 || !selectedMarker) {
+  // ถ้าไม่มีหมุดเลย หรือไม่มี marker ที่เลือก
+  // หรือ marker ที่เลือกไม่มี hotspot
+  // ก็ไม่ render แผนที่ และแสดงข้อความแทน
+  if (markers.length === 0 || !selectedMarker || selectedMarker.hotspots.length === 0) {
     return <div className="mapPlaceholder">No hotspot with GPS is available for the map yet.</div>;
   }
 
-  return (
-    <MapContainer center={[selectedMarker.lat, selectedMarker.lon]} zoom={18} className="map">
-      <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-      <FocusMap markers={markers} selectedMarkerId={selectedMarkerId} />
+  // ป้องกันไม่ให้ index หลุดเกินจำนวน hotspot จริง
+  const activeCompactHotspotIndex = Math.min(compactHotspotIndex, selectedMarker.hotspots.length - 1);
 
-      {markers.map((marker) => (
-        <Marker
-          key={marker.id}
-          position={[marker.lat, marker.lon]}
-          icon={createMarkerIcon(marker.priority, marker.id === selectedMarkerId)}
-          ref={(markerInstance) => {
-            markerRefs.current[marker.id] = markerInstance as PopupCapableMarker | null;
-          }}
-          eventHandlers={{
-            click: () => {
-              onSelectMarker?.(marker.id);
-            },
-          }}
-        >
-          <Popup {...popupProps}>
+  // ถ้าเป็น compact popup จะแสดงทีละ hotspot
+  // ถ้าไม่ compact จะแสดง hotspot ทุกตัวใน popup เดียว
+  const visibleHotspots = isCompactPopup
+    ? [
+        {
+          hotspot: selectedMarker.hotspots[activeCompactHotspotIndex],
+          index: activeCompactHotspotIndex,
+        },
+      ]
+    : selectedMarker.hotspots.map((hotspot, index) => ({ hotspot, index }));
+
+  // รวม props ของ Popup ไว้ตรงนี้
+  // เพื่อไม่ให้ JSX ยาวเกินไป
+  const popupProps = {
+    className: isCompactPopup ? "mapPopup mapPopupCompact" : "mapPopup",
+    closeButton: true,
+    autoPan: true,
+    keepInView: true,
+    minWidth: isCompactPopup ? 260 : 312,
+    maxWidth: isCompactPopup ? 292 : 356,
+    autoPanPaddingTopLeft: (isCompactPopup ? [64, 16] : [88, 24]) as [number, number],
+    autoPanPaddingBottomRight: (isCompactPopup ? [16, 16] : [24, 24]) as [number, number],
+    offset: [0, -12] as [number, number],
+    eventHandlers: {
+      remove: () => {
+        // ถ้าผู้ใช้ปิด popup ให้จำไว้ว่า popup ของ marker นี้ถูกปิดแล้ว
+        setDismissedMarkerId(selectedMarker.id);
+      },
+    },
+  } as ComponentProps<typeof Popup>;
+
+  // ส่วนที่แสดงผลบนหน้าจอ
+  return (
+    // div ครอบภายนอกของแผนที่
+    <div className="mapViewport">
+      {/* MapContainer คือกรอบแผนที่ทั้งหมด */}
+      <MapContainer
+        center={[selectedMarker.lat, selectedMarker.lon]} // ตำแหน่งศูนย์กลางแผนที่
+        zoom={18} // ระดับการซูม (ยิ่งมาก ยิ่งใกล้)
+        className="map" // class สำหรับตกแต่งด้วย CSS
+      >
+        {/* TileLayer คือพื้นแผนที่ */}
+        {/* ใช้แผนที่ฟรีจาก OpenStreetMap */}
+        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+
+        {/* component นี้ช่วยสั่งให้แผนที่เลื่อนไปยังหมุดที่เลือก */}
+        <FocusMap selectedMarker={selectedMarker} />
+
+        {/* วนสร้าง Marker สำหรับทุกหมุดในข้อมูล */}
+        {markers.map((marker) => (
+          <Marker
+            key={marker.id}
+            position={[marker.lat, marker.lon]} // position ใช้ lat, lon ของ marker นั้น
+            icon={createMarkerIcon(marker.priority, marker.id === effectiveSelectedMarkerId)} // ใช้หมุด custom ที่เปลี่ยนสีตาม priority ได้
+            eventHandlers={{
+              click: () => {
+                // เมื่อกดหมุด ให้เปิด popup ใหม่และแจ้ง parent ว่าเลือก marker ตัวนี้
+                setDismissedMarkerId(null);
+                onSelectMarker?.(marker.id);
+              },
+            }}
+          />
+        ))}
+
+        {/* แสดง popup เฉพาะตอนที่ popup ของ marker นี้ยังไม่ถูกปิด */}
+        {dismissedMarkerId !== selectedMarker.id && (
+          <Popup
+            key={`popup-${selectedMarker.id}`}
+            position={[selectedMarker.lat, selectedMarker.lon]}
+            {...popupProps}
+          >
+            {/* เนื้อหาทั้งหมดใน popup */}
             <div className="mapPopupBody">
-              <div className="mapPopupHeader">
-                <h3 className="mapPopupTitle">{marker.pairLabel}</h3>
-                <span className="mapPopupCount">{marker.hotspots.length} hotspots</span>
-              </div>
-              <div className="mapPopupHotspotList">
-                {marker.hotspots.map((hotspot) => (
-                  <section key={`${marker.id}-${hotspot.hotspotLabel}`} className="mapPopupHotspotCard">
+              {/* ส่วนหัวของ popup */}
+              <header className="mapPopupIntro">
+                <h3 className="mapPopupTitle">{selectedMarker.pairLabel}</h3>
+                <p className="mapPopupSubtitle">
+                  {selectedMarker.hotspots.length} hotspot{selectedMarker.hotspots.length === 1 ? "" : "s"} in this
+                  image
+                </p>
+              </header>
+
+              {/* ถ้าเป็นหน้าจอเล็ก จะแสดงปุ่มเลือก hotspot เป็นแถบด้านบน */}
+              {isCompactPopup && (
+                <div className="mapPopupCompactRail" role="tablist" aria-label="Hotspot selector">
+                  {selectedMarker.hotspots.map((hotspot, hotspotIndex) => (
+                    <button
+                      key={`${selectedMarker.id}-chip-${hotspotIndex}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={hotspotIndex === activeCompactHotspotIndex}
+                      className={`mapPopupCompactRailButton ${hotspotIndex === activeCompactHotspotIndex ? "selected" : ""}`}
+                      onClick={() => setCompactHotspotIndex(hotspotIndex)}
+                    >
+                      {hotspot.hotspotLabel || `Hotspot ${hotspotIndex + 1}`}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* พื้นที่เนื้อหาใน popup ที่เลื่อนได้ */}
+              <div key={`scroll-${selectedMarker.id}`} className="mapPopupScroll">
+                {visibleHotspots.map(({ hotspot, index }) => (
+                  <section key={`${selectedMarker.id}-${hotspot.hotspotLabel}-${index}`} className="mapPopupHotspotCard">
+                    {/* ส่วนหัวของการ์ด hotspot แต่ละตัว */}
                     <div className="mapPopupHotspotHeader">
-                      <p className="mapPopupHotspotName">{hotspot.hotspotLabel}</p>
+                      <p className="mapPopupHotspotName">{hotspot.hotspotLabel || `Hotspot ${index + 1}`}</p>
                       <span className={getPopupPriorityClass(hotspot.priority)}>
                         {hotspot.priority ?? "Not rated"}
                       </span>
                     </div>
-                    <div className="mapPopupFactList">
-                      <p className="mapPopupFactRow">
-                        <span className="mapPopupFactInlineLabel">Equipment:</span>
-                        <span className="mapPopupFactInlineValue">{hotspot.equipmentLabel}</span>
-                      </p>
-                      <p className="mapPopupFactRow">
-                        <span className="mapPopupFactInlineLabel">Temperature:</span>
-                        <span className="mapPopupFactInlineValue">{hotspot.temperatureLabel}</span>
-                      </p>
-                      <p className="mapPopupFactRow">
-                        <span className="mapPopupFactInlineLabel">Action:</span>
-                        <span className="mapPopupFactInlineValue">
-                          {hotspot.actionRequired ?? "No action suggested"}
-                        </span>
-                      </p>
+
+                    {/* ส่วนข้อมูลสรุปของ hotspot */}
+                    <div className="mapPopupMetricGrid">
+                      <section className="mapPopupMetricCard">
+                        <p className="mapPopupMetricLabel">Equipment</p>
+                        <p className="mapPopupMetricValue">{hotspot.equipmentLabel}</p>
+                      </section>
+
+                      <section className="mapPopupMetricCard">
+                        <p className="mapPopupMetricLabel">Temperature</p>
+                        <p className="mapPopupMetricValue">{hotspot.temperatureLabel}</p>
+                      </section>
+
+                      <section className="mapPopupMetricCard mapPopupMetricCardWide">
+                        <p className="mapPopupMetricLabel">Action</p>
+                        <p className="mapPopupMetricValue">{hotspot.actionRequired ?? "No action suggested"}</p>
+                      </section>
                     </div>
                   </section>
                 ))}
               </div>
             </div>
           </Popup>
-        </Marker>
-      ))}
-    </MapContainer>
+        )}
+      </MapContainer>
+    </div>
   );
 }

@@ -237,10 +237,226 @@ body::after {
 }
 
 .map {
-  height: 420px;
-  border-radius: 16px;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.mapViewport {
+  position: relative;
+  height: 520px;
   overflow: hidden;
+  container-type: inline-size;
+  border-radius: 16px;
   border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #ece7de;
+}
+
+.mapOverlayPanel {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  z-index: 600;
+  width: min(368px, calc(100% - 36px));
+  aspect-ratio: 1 / 1;
+  max-height: calc(100% - 36px);
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 14px 16px;
+  border-radius: 26px;
+  border: 1px solid rgba(116, 105, 93, 0.12);
+  background: rgba(255, 252, 247, 0.98);
+  box-shadow: 0 18px 38px rgba(30, 22, 16, 0.14);
+  pointer-events: auto;
+}
+
+.mapOverlayIntro {
+  display: grid;
+  gap: 6px;
+  padding-right: 28px;
+}
+
+.mapOverlayTitle {
+  margin: 0;
+  font-size: clamp(1.35rem, 1.15rem + 0.7vw, 1.75rem);
+  line-height: 0.94;
+  letter-spacing: -0.03em;
+  font-weight: 900;
+  color: #2a231d;
+}
+
+.mapOverlaySubtitle {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.25;
+  color: #72675b;
+}
+
+.mapOverlayClose {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #8f8579;
+  font-size: 1.65rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mapOverlayClose:hover {
+  color: #2d2823;
+}
+
+.mapOverlayBody {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
+  min-height: 0;
+}
+
+.mapOverlayHotspotCard {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  padding: 14px;
+  border-radius: 22px;
+  border: 1px solid rgba(116, 105, 93, 0.12);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.mapOverlayHotspotHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mapOverlayHotspotName {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.2;
+  font-weight: 900;
+  color: #302821;
+}
+
+.mapOverlayPriority {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.mapOverlayPriorityP1 {
+  background: #f7d7d2;
+  color: #a13b2f;
+}
+
+.mapOverlayPriorityP2 {
+  background: #f7e4cb;
+  color: #a56416;
+}
+
+.mapOverlayPriorityP3 {
+  background: #f5e8c4;
+  color: #8d6912;
+}
+
+.mapOverlayPriorityDefault {
+  background: #dce6f6;
+  color: #3c5d95;
+}
+
+.mapOverlayMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mapOverlayMetricCard {
+  display: grid;
+  align-content: start;
+  min-height: 96px;
+  padding: 13px 13px 11px;
+  border-radius: 16px;
+  background: #f5f0e9;
+  gap: 7px;
+}
+
+.mapOverlayMetricCardWide {
+  grid-column: 1 / -1;
+  min-height: 82px;
+}
+
+.mapOverlayMetricLabel {
+  margin: 0;
+  font-size: 0.64rem;
+  line-height: 1.1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: #918679;
+}
+
+.mapOverlayMetricValue {
+  margin: 0;
+  min-width: 0;
+  font-size: 0.76rem;
+  line-height: 1.28;
+  font-weight: 500;
+  color: #4a4037;
+  overflow-wrap: anywhere;
+}
+
+.mapOverlayPager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mapOverlayPagerButton {
+  min-width: 64px;
+  padding: 7px 10px;
+  border: 1px solid rgba(116, 105, 93, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #5f554b;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mapOverlayPagerStatus {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #72675b;
+}
+
+.mapOverlayTail {
+  position: absolute;
+  left: 50%;
+  bottom: -9px;
+  width: 18px;
+  height: 18px;
+  background: rgba(255, 252, 247, 0.98);
+  border-right: 1px solid rgba(116, 105, 93, 0.12);
+  border-bottom: 1px solid rgba(116, 105, 93, 0.12);
+  transform: translateX(-50%) rotate(45deg);
 }
 
 .summaryBar {
@@ -531,34 +747,38 @@ body::after {
 }
 
 .mapPopup .leaflet-popup-content-wrapper {
-  border-radius: 16px;
-  box-shadow: 0 16px 34px rgba(16, 12, 8, 0.14);
-  background: rgba(255, 252, 247, 0.98);
-  width: min(300px, calc(100vw - 56px));
-  min-width: 260px;
+  border-radius: 24px;
+  box-shadow: 0 18px 38px rgba(30, 22, 16, 0.14);
+  background: rgba(255, 252, 247, 0.985);
+  width: min(356px, calc(100cqw - 32px));
+  min-width: min(312px, calc(100cqw - 32px));
+  max-width: calc(100cqw - 28px);
   overflow: hidden;
 }
 
 .mapPopup .leaflet-popup-content {
   margin: 0;
-  width: min(300px, calc(100vw - 56px)) !important;
-  min-width: min(260px, calc(100vw - 56px));
+  width: min(356px, calc(100cqw - 32px)) !important;
+  min-width: min(312px, calc(100cqw - 32px));
+  max-width: calc(100cqw - 28px);
   max-height: none !important;
   overflow: visible !important;
 }
 
 .mapPopup .leaflet-popup-tip {
   background: rgba(255, 252, 247, 0.98);
+  width: 18px;
+  height: 18px;
 }
 
 .mapPopup .leaflet-popup-close-button {
-  top: 8px;
-  right: 8px;
-  width: 16px;
-  height: 16px;
+  top: 10px;
+  right: 10px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  font-size: 15px;
-  color: #80776d;
+  font-size: 20px;
+  color: #93897d;
 }
 
 .mapPopup .leaflet-popup-close-button:hover {
@@ -567,7 +787,7 @@ body::after {
 
 .mapPopup .leaflet-popup-close-button span {
   display: block;
-  line-height: 1;
+  line-height: 0.8;
 }
 
 .mapPopup .leaflet-popup-content-wrapper,
@@ -577,135 +797,161 @@ body::after {
 
 .mapPopupBody {
   display: grid;
-  gap: 6px;
-  padding: 8px 10px 10px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 4px;
+  width: min(356px, calc(100cqw - 32px));
+  height: 396px;
+  padding: 10px;
+  overflow: hidden;
 }
 
-.mapPopupHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-right: 16px;
+.mapPopupIntro {
+  display: grid;
+  gap: 0;
+  padding: 0 26px 0 2px;
 }
 
 .mapPopupTitle {
   margin: 0;
-  font-size: 16px;
-  font-weight: 800;
-  line-height: 1.05;
+  font-size: clamp(1.18rem, 1.06rem + 0.36vw, 1.34rem);
+  font-weight: 900;
+  line-height: 1;
   letter-spacing: -0.02em;
-  color: #2e2924;
+  color: #28211c;
 }
 
-.mapPopupCount {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 20px;
-  padding: 3px 7px;
-  border-radius: 999px;
-  background: rgba(255, 106, 61, 0.1);
-  color: #bf592a;
-  font-size: 10px;
-  font-weight: 700;
+.mapPopupSubtitle {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1;
+  color: #70665b;
 }
 
-.mapPopupHotspotList {
+.mapPopupScroll {
   display: grid;
-  gap: 4px;
-  max-height: 228px;
+  gap: 3px;
+  min-height: 0;
   overflow-y: auto;
-  padding-right: 2px;
+  padding: 0 4px 0 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(133, 123, 113, 0.85) transparent;
+}
+
+.mapPopupScroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.mapPopupScroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mapPopupScroll::-webkit-scrollbar-thumb {
+  background: rgba(133, 123, 113, 0.85);
+  border-radius: 999px;
+  border: 3px solid rgba(255, 252, 247, 0.985);
 }
 
 .mapPopupHotspotCard {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   width: 100%;
-  padding: 6px 8px 7px;
-  border-radius: 12px;
-  border: 1px solid rgba(31, 27, 22, 0.08);
-  background: rgba(255, 255, 255, 0.92);
+  padding: 9px 9px 8px;
+  border-radius: 18px;
+  border: 1px solid rgba(111, 101, 91, 0.14);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
 }
 
 .mapPopupHotspotHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
 }
 
 .mapPopupHotspotName {
   margin: 0;
-  font-size: 13px;
-  font-weight: 800;
-  line-height: 1.2;
-  color: #2f2a25;
+  font-size: 0.94rem;
+  font-weight: 900;
+  line-height: 1.12;
+  color: #312a24;
 }
 
 .mapPopupPriority {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 20px;
-  padding: 3px 7px;
+  min-height: 24px;
+  padding: 4px 9px;
   border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 0.72rem;
+  font-weight: 600;
   white-space: nowrap;
 }
 
 .mapPopupPriorityP1 {
-  background: rgba(209, 63, 47, 0.14);
-  color: #b53c2f;
+  background: #f8d8d2;
+  color: #9e382d;
 }
 
 .mapPopupPriorityP2 {
-  background: rgba(240, 138, 41, 0.16);
-  color: #b56a18;
+  background: #f8e2c7;
+  color: #a25f11;
 }
 
 .mapPopupPriorityP3 {
-  background: rgba(243, 190, 77, 0.2);
-  color: #8f6a10;
+  background: #f4e7c0;
+  color: #8c6811;
 }
 
 .mapPopupPriorityDefault {
-  background: rgba(47, 93, 150, 0.12);
+  background: #dde8f6;
   color: #355d92;
 }
 
-.mapPopupFactList {
+.mapPopupMetricGrid {
   display: grid;
-  gap: 2px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.mapPopupFactRow {
+.mapPopupMetricCard {
   margin: 0;
   display: flex;
-  align-items: baseline;
-  gap: 3px;
-  min-width: 0;
-  font-size: 12px;
-  line-height: 1.2;
-  color: #433c35;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-height: 64px;
+  padding: 7px 7px 6px;
+  border-radius: 16px;
+  background: #f5f0ea;
+  border: 1px solid rgba(116, 105, 93, 0.06);
+  gap: 1px;
 }
 
-.mapPopupFactInlineLabel {
-  flex: 0 0 auto;
-  font-size: 12px;
-  font-weight: 700;
-  color: #6f665c;
+.mapPopupMetricCardWide {
+  grid-column: 1 / -1;
+  min-height: 0;
+  padding-top: 7px;
+  padding-bottom: 6px;
 }
 
-.mapPopupFactInlineValue {
+.mapPopupMetricLabel {
+  margin: 0;
+  font-size: 0.64rem;
+  line-height: 1.02;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: #918679;
+}
+
+.mapPopupMetricValue {
   min-width: 0;
   margin: 0;
-  font-size: 12px;
-  line-height: 1.2;
-  color: #433c35;
+  font-size: 0.86rem;
+  line-height: 1.04;
+  font-weight: 500;
+  color: #473f37;
   overflow-wrap: anywhere;
 }
 
@@ -796,6 +1042,433 @@ body::after {
   .resultGrid {
     grid-template-columns: 1fr;
   }
+
+  .mapPopup .leaflet-popup-content-wrapper {
+    width: min(328px, calc(100cqw - 88px));
+    min-width: min(288px, calc(100cqw - 88px));
+    max-width: calc(100cqw - 76px);
+    border-radius: 20px;
+  }
+
+  .mapPopup .leaflet-popup-content {
+    width: min(328px, calc(100cqw - 88px)) !important;
+    min-width: min(288px, calc(100cqw - 88px));
+    max-width: calc(100cqw - 76px);
+  }
+
+  .mapPopupBody {
+    width: min(328px, calc(100cqw - 88px));
+    height: 320px;
+    gap: 4px;
+    padding: 8px;
+  }
+
+  .mapPopupTitle {
+    font-size: 0.98rem;
+  }
+
+  .mapPopupSubtitle {
+    font-size: 0.7rem;
+    line-height: 1;
+  }
+
+  .mapPopupHotspotCard {
+    min-height: 0;
+    padding: 8px 8px 7px;
+    border-radius: 16px;
+    gap: 4px;
+  }
+
+  .mapPopupHotspotName {
+    font-size: 0.86rem;
+  }
+
+  .mapPopupPriority {
+    min-height: 24px;
+    padding: 3px 8px;
+    font-size: 0.66rem;
+    font-weight: 600;
+  }
+
+  .mapPopupMetricGrid {
+    gap: 8px;
+  }
+
+  .mapPopupScroll {
+    gap: 4px;
+    padding-right: 2px;
+  }
+
+  .mapPopupMetricCard {
+    min-height: 54px;
+    padding: 6px 6px 5px;
+    border-radius: 14px;
+    gap: 1px;
+  }
+
+  .mapPopupMetricCardWide {
+    min-height: 0;
+    padding-top: 7px;
+    padding-bottom: 6px;
+  }
+
+  .mapPopupMetricLabel {
+    font-size: 0.56rem;
+    line-height: 1;
+  }
+
+  .mapPopupMetricValue {
+    font-size: 0.74rem;
+    line-height: 1.04;
+  }
+
+  .mapViewport {
+    height: 480px;
+  }
+
+  .mapOverlayPanel {
+    top: 16px;
+    width: min(332px, calc(100% - 18px));
+    max-height: calc(100% - 30px);
+    padding: 12px 12px 14px;
+    border-radius: 22px;
+    gap: 10px;
+  }
+
+  .mapOverlayIntro {
+    gap: 4px;
+    padding-right: 24px;
+  }
+
+  .mapOverlayTitle {
+    font-size: clamp(1.18rem, 1.05rem + 0.6vw, 1.45rem);
+  }
+
+  .mapOverlaySubtitle {
+    font-size: 0.72rem;
+  }
+
+  .mapOverlayHotspotCard {
+    gap: 8px;
+    padding: 11px;
+    border-radius: 18px;
+  }
+
+  .mapOverlayHotspotName {
+    font-size: 0.78rem;
+  }
+
+  .mapOverlayPriority {
+    min-height: 26px;
+    padding: 4px 9px;
+    font-size: 0.66rem;
+  }
+
+  .mapOverlayMetricGrid {
+    gap: 8px;
+  }
+
+  .mapOverlayMetricCard {
+    min-height: 76px;
+    padding: 11px;
+    border-radius: 14px;
+  }
+
+  .mapOverlayMetricCardWide {
+    min-height: 66px;
+  }
+
+  .mapOverlayMetricLabel {
+    font-size: 0.58rem;
+  }
+
+  .mapOverlayMetricValue {
+    font-size: 0.7rem;
+  }
+
+  .mapOverlayPagerButton {
+    min-width: 56px;
+    padding: 6px 8px;
+    font-size: 0.66rem;
+  }
+
+  .mapOverlayPagerStatus {
+    font-size: 0.66rem;
+  }
+
+}
+
+@media (max-width: 640px) {
+  .mapPopup .leaflet-popup-content-wrapper {
+    width: min(276px, calc(100vw - 72px), calc(100cqw - 36px));
+    min-width: 0;
+    max-width: min(276px, calc(100vw - 72px), calc(100cqw - 36px));
+    border-radius: 18px;
+  }
+
+  .mapPopup .leaflet-popup-content {
+    width: min(276px, calc(100vw - 72px), calc(100cqw - 36px)) !important;
+    min-width: 0;
+    max-width: min(276px, calc(100vw - 72px), calc(100cqw - 36px));
+  }
+
+  .mapPopupBody {
+    width: min(276px, calc(100vw - 72px), calc(100cqw - 36px));
+    height: 304px;
+    padding: 7px;
+  }
+
+  .mapPopupScroll {
+    gap: 5px;
+    padding-right: 1px;
+  }
+
+  .mapPopupScroll::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .mapPopupScroll::-webkit-scrollbar-thumb {
+    border-width: 2px;
+  }
+
+  .mapPopupHotspotCard {
+    gap: 5px;
+  }
+
+  .mapPopupMetricGrid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .mapPopupMetricCard,
+  .mapPopupMetricCardWide {
+    grid-column: auto;
+    min-height: 0;
+    padding: 6px 7px;
+    border-radius: 14px;
+    display: grid;
+    grid-template-columns: 76px 1fr;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .mapPopupMetricLabel {
+    margin: 0;
+    line-height: 1;
+  }
+
+  .mapPopupMetricValue {
+    margin: 0;
+    line-height: 1.05;
+  }
+}
+
+@media (max-width: 520px) {
+  .mapPopup .leaflet-popup-content-wrapper {
+    width: min(252px, calc(100vw - 64px), calc(100cqw - 28px));
+    max-width: min(252px, calc(100vw - 64px), calc(100cqw - 28px));
+  }
+
+  .mapPopup .leaflet-popup-content {
+    width: min(252px, calc(100vw - 64px), calc(100cqw - 28px)) !important;
+    max-width: min(252px, calc(100vw - 64px), calc(100cqw - 28px));
+  }
+
+  .mapPopupBody {
+    width: min(252px, calc(100vw - 64px), calc(100cqw - 28px));
+    height: 292px;
+    padding: 6px;
+  }
+
+  .mapPopupTitle {
+    font-size: 0.92rem;
+  }
+
+  .mapPopupSubtitle {
+    font-size: 0.66rem;
+  }
+
+  .mapPopupHotspotName {
+    font-size: 0.76rem;
+  }
+
+  .mapPopupPriority {
+    min-height: 21px;
+    padding: 3px 6px;
+    font-size: 0.54rem;
+  }
+
+  .mapPopupMetricCard,
+  .mapPopupMetricCardWide {
+    grid-template-columns: 70px 1fr;
+    padding: 5px 6px;
+    gap: 7px;
+  }
+
+  .mapPopupMetricLabel {
+    font-size: 0.48rem;
+  }
+
+  .mapPopupMetricValue {
+    font-size: 0.66rem;
+  }
+}
+
+.mapPopupCompact .leaflet-popup-content-wrapper {
+  width: min(272px, calc(100vw - 56px), calc(100cqw - 18px));
+  min-width: 0;
+  max-width: min(272px, calc(100vw - 56px), calc(100cqw - 18px));
+  border-radius: 16px;
+}
+
+.mapPopupCompact .leaflet-popup-content {
+  width: min(272px, calc(100vw - 56px), calc(100cqw - 18px)) !important;
+  min-width: 0;
+  max-width: min(272px, calc(100vw - 56px), calc(100cqw - 18px));
+}
+
+.mapPopupCompact .leaflet-popup-close-button {
+  top: 8px;
+  right: 8px;
+}
+
+.mapPopupCompact .leaflet-popup-tip {
+  width: 16px;
+  height: 16px;
+}
+
+.mapPopupCompact .leaflet-popup-content-wrapper,
+.mapPopupCompact .leaflet-popup-tip {
+  border-width: 1px;
+}
+
+.mapPopupCompact .mapPopupBody {
+  width: min(272px, calc(100vw - 56px), calc(100cqw - 18px));
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 324px;
+  gap: 5px;
+  padding: 6px;
+}
+
+.mapPopupCompact .mapPopupIntro {
+  gap: 1px;
+  padding: 0 16px 0 1px;
+}
+
+.mapPopupCompact .mapPopupTitle {
+  font-size: 0.96rem;
+}
+
+.mapPopupCompact .mapPopupSubtitle {
+  font-size: 0.66rem;
+  line-height: 1.08;
+}
+
+.mapPopupCompact .mapPopupCompactRail {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0 1px 2px;
+  scrollbar-width: none;
+}
+
+.mapPopupCompact .mapPopupCompactRail::-webkit-scrollbar {
+  display: none;
+}
+
+.mapPopupCompact .mapPopupCompactRailButton {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(112, 101, 90, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 0.6rem;
+  font-weight: 600;
+  line-height: 1;
+  color: #72675b;
+  white-space: nowrap;
+}
+
+.mapPopupCompact .mapPopupCompactRailButton.selected {
+  background: #efe7dc;
+  border-color: rgba(140, 126, 112, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  color: #2f2924;
+}
+
+.mapPopupCompact .mapPopupScroll {
+  gap: 4px;
+  padding-right: 1px;
+}
+
+.mapPopupCompact .mapPopupScroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.mapPopupCompact .mapPopupScroll::-webkit-scrollbar-thumb {
+  border-width: 2px;
+}
+
+.mapPopupCompact .mapPopupHotspotCard {
+  padding: 8px 8px 7px;
+  border-radius: 13px;
+  gap: 5px;
+  border-color: rgba(111, 101, 91, 0.12);
+}
+
+.mapPopupCompact .mapPopupHotspotHeader {
+  gap: 6px;
+  align-items: center;
+}
+
+.mapPopupCompact .mapPopupHotspotName {
+  font-size: 0.8rem;
+  line-height: 1.04;
+}
+
+.mapPopupCompact .mapPopupPriority {
+  min-height: 20px;
+  padding: 2px 6px;
+  font-size: 0.5rem;
+  font-weight: 600;
+}
+
+.mapPopupCompact .mapPopupMetricGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mapPopupCompact .mapPopupMetricCard {
+  min-height: 48px;
+  padding: 5px 6px 4px;
+  border-radius: 12px;
+  gap: 1px;
+}
+
+.mapPopupCompact .mapPopupMetricCardWide {
+  grid-column: 1 / -1;
+  min-height: 0;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.mapPopupCompact .mapPopupMetricLabel {
+  font-size: 0.5rem;
+  line-height: 1;
+  letter-spacing: 0.06em;
+}
+
+.mapPopupCompact .mapPopupMetricValue {
+  font-size: 0.64rem;
+  line-height: 1.04;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 @keyframes rise {
