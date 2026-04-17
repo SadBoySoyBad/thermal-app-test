@@ -647,16 +647,133 @@ body::after {
   background: rgba(255, 248, 239, 0.14);
 }
 
-.resultGrid {
+.selectedPairLayout {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
+  gap: 18px;
+  width: min(100%, 1120px);
+  margin-inline: auto;
+}
+
+.selectedPairHeroGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
   gap: 18px;
   align-items: start;
 }
 
-.annotatedPanel {
+.selectedPairInfoStack {
+  display: grid;
+  gap: 14px;
+}
+
+.comparisonGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.comparisonCard {
   display: grid;
   gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.comparisonCardActions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.comparisonCardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.comparisonCardCopy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.comparisonCardTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.comparisonCardHint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-1);
+}
+
+.comparisonPlaceholder {
+  min-height: 240px;
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px dashed rgba(31, 27, 22, 0.12);
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 1.6;
+  display: grid;
+  align-items: center;
+}
+
+.comparisonPlaceholder.warning {
+  border-color: rgba(180, 76, 39, 0.24);
+  background: rgba(255, 244, 239, 0.86);
+  color: #9d4525;
+}
+
+.imageDownloadButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(31, 27, 22, 0.12);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text-0);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+}
+
+.imageDownloadButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(27, 17, 10, 0.08);
+}
+
+.imageDownloadButton:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.selectedPairStatus,
+.selectedPairReference,
+.roiToolbar {
+  margin: 0;
+}
+
+.annotatedImageFrame {
+  position: relative;
+  width: 100%;
+  border-radius: 16px;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.annotatedImageFrameInteractive {
+  cursor: crosshair;
 }
 
 .annotatedImage {
@@ -664,9 +781,129 @@ body::after {
   border-radius: 16px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   display: block;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
-.detailColumn,
+.annotatedRoiOverlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  touch-action: none;
+}
+
+.annotatedRoiOverlay.disabled {
+  pointer-events: none;
+}
+
+.annotatedRoiBox {
+  position: absolute;
+  border-radius: 12px;
+  border: 2px solid rgba(255, 106, 61, 0.95);
+  background: rgba(255, 106, 61, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 252, 247, 0.92) inset;
+  pointer-events: none;
+}
+
+.annotatedRoiLabel {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(31, 27, 22, 0.86);
+  color: #fff8ef;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+.roiToolbar {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(31, 27, 22, 0.08);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.roiToolbarHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.roiToolbarCopy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.roiToolbarTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.roiToolbarHint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-1);
+}
+
+.roiToolbarWarning {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #b44c27;
+}
+
+.roiActionRow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.roiButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(31, 27, 22, 0.08);
+  background: #1f1b16;
+  color: #fff8ef;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 160ms ease, opacity 160ms ease, background 160ms ease;
+}
+
+.roiButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.roiButton.secondary {
+  background: rgba(255, 255, 255, 0.84);
+  color: var(--text-0);
+}
+
+.roiButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .detailStack,
 .hotspotList {
   display: grid;
@@ -1039,8 +1276,45 @@ body::after {
     padding-inline: 0;
   }
 
-  .resultGrid {
+  .selectedPairHeroGrid,
+  .comparisonGrid {
     grid-template-columns: 1fr;
+  }
+
+  .comparisonCard {
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .comparisonCardActions {
+    width: 100%;
+  }
+
+  .imageDownloadButton {
+    width: 100%;
+  }
+
+  .comparisonPlaceholder {
+    min-height: 200px;
+    padding: 16px;
+  }
+
+  .roiToolbar {
+    padding: 12px;
+  }
+
+  .roiToolbarHeader {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .roiActionRow {
+    width: 100%;
+  }
+
+  .roiButton {
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .mapPopup .leaflet-popup-content-wrapper {

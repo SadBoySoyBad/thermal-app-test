@@ -2,6 +2,12 @@
 // บอก Next.js ว่าไฟล์นี้ต้องรันฝั่ง Browser (ไม่ใช่ฝั่ง Server)
 // เพราะ Leaflet ใช้ window / document ซึ่ง Server ใช้ไม่ได้
 
+// =============================
+// ส่วนที่ 1: import library ที่จำเป็น
+// ส่วนนี้คือการดึงเครื่องมือที่ไฟล์นี้ต้องใช้เข้ามา
+// ถ้าพูดแบบภาษาคนทั่วไป ส่วนนี้คือการ "หยิบอุปกรณ์เข้ากล่องทำงาน" ก่อนเริ่มใช้งานจริง
+// =============================
+
 // นำทุกอย่างจาก leaflet มาใช้ในชื่อ Leaflet
 // ใช้ในไฟล์นี้เพื่อสร้าง DivIcon แบบ custom สำหรับหมุด
 import * as Leaflet from "leaflet";
@@ -19,6 +25,11 @@ import { MapContainer, Marker, Popup, TileLayer, useMap } from "react-leaflet";
 // useState = ใช้เก็บสถานะภายใน component
 // ComponentProps = ใช้ดึง type ของ props จาก component อื่นมาใช้อ้างอิง
 import { useEffect, useState, type ComponentProps } from "react";
+
+// =============================
+// ส่วนที่ 2: รูปแบบข้อมูลที่ component นี้ใช้
+// ส่วนนี้คือการกำหนดว่า "ข้อมูลหน้าตาแบบไหนถึงจะส่งเข้ามาได้"
+// =============================
 
 // ข้อมูลของหมุด 1 จุดบนแผนที่
 // 1 หมุดจะเก็บตำแหน่ง ชื่อคู่ภาพ ระดับความสำคัญ
@@ -39,7 +50,11 @@ export type MapMarkerItem = {
 };
 
 // กำหนดชนิดของข้อมูล (Props) ที่ component นี้ต้องรับเข้ามา
-type Props = {
+// ภาษาคนทั่วไป: ข้อมูลหลักที่หน้าจอแผนที่ต้องใช้ในการทำงาน
+// - markers = รายการหมุดทั้งหมด
+// - selectedMarkerId = หมุดที่กำลังถูกเลือก
+// - onSelectMarker = ตัวส่งสัญญาณกลับเมื่อผู้ใช้กดเลือกหมุด
+ type Props = {
   markers: MapMarkerItem[]; // รายการหมุดทั้งหมดที่จะเอาไปแสดงบนแผนที่
   selectedMarkerId: string | null; // id ของหมุดที่กำลังถูกเลือกอยู่
   onSelectMarker?: (markerId: string) => void; // function ที่เรียกกลับเมื่อผู้ใช้เลือกหมุด
@@ -68,6 +83,12 @@ type MapController = {
 // ดึง type ของ icon ที่ Marker ของ react-leaflet รับได้
 // เอาไว้ใช้เป็นชนิดข้อมูลของหมุด custom icon
 type MarkerIconLike = NonNullable<ComponentProps<typeof Marker>["icon"]>;
+
+// =============================
+// ส่วนที่ 3: ฟังก์ชันช่วยเรื่องสีและหน้าตาของหมุด
+// ส่วนนี้มีหน้าที่แปลค่า priority ให้กลายเป็น class CSS
+// พูดง่าย ๆ คือดูว่าหมุดสำคัญระดับไหน แล้วเลือกสี/หน้าตาให้ถูก
+// =============================
 
 // ดูว่า priority เป็นระดับไหน
 // แล้วคืนชื่อ class CSS สำหรับตกแต่งสีของหมุดบนแผนที่
@@ -123,6 +144,11 @@ function createMarkerIcon(priority: string | null, selected: boolean): MarkerIco
   }) as MarkerIconLike;
 }
 
+// =============================
+// ส่วนที่ 4: component ย่อยสำหรับเลื่อนแผนที่ไปยังหมุดที่เลือก
+// พูดง่าย ๆ คือถ้าเลือกหมุดใหม่ กล้องของแผนที่จะขยับตามไปหาจุดนั้น
+// =============================
+
 // component ย่อยตัวนี้มีหน้าที่พาแผนที่เลื่อนไปหาหมุดที่ถูกเลือก
 // เวลาผู้ใช้เลือก marker ใหม่ แผนที่จะขยับไปหาตำแหน่งนั้นอัตโนมัติ
 function FocusMap({
@@ -140,6 +166,12 @@ function FocusMap({
 
   return null;
 }
+
+// =============================
+// ส่วนที่ 5: component หลักของแผนที่
+// ส่วนนี้คือหัวใจของไฟล์
+// ทำหน้าที่รับข้อมูลหมุดทั้งหมด แล้วแสดงเป็นแผนที่พร้อม popup
+// =============================
 
 // สร้าง component ชื่อ MapView
 // รับข้อมูลหมุดทั้งหมด หมุดที่เลือกอยู่ และ function สำหรับเปลี่ยนหมุดที่เลือก
@@ -160,8 +192,14 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
   // ถ้าหน้าจอเล็ก จะเปิด popup แบบ compact
   const [isCompactPopup, setIsCompactPopup] = useState(false);
 
-  // ใช้เก็บว่าใน popup แบบ compact กำลังดู hotspot ตัวที่เท่าไร
-  const [compactHotspotIndex, setCompactHotspotIndex] = useState(0);
+  // [เพิ่มใหม่ล่าสุด] เดิมเก็บแค่เลขลำดับ hotspot อย่างเดียว
+  // แต่เวอร์ชันล่าสุดเปลี่ยนมาเก็บทั้ง markerId และ hotspotIndex
+  // เพื่อให้ระบบรู้ว่า "ตอนนี้ผู้ใช้กำลังเปิด hotspot ของหมุดไหนอยู่"
+  // ภาษาคนทั่วไป: กันอาการข้อมูลสลับกันหรือจำค่าผิดตอนผู้ใช้กดเปลี่ยนหมุดไปมา
+  const [compactSelection, setCompactSelection] = useState<{ markerId: string | null; hotspotIndex: number }>({
+    markerId: null,
+    hotspotIndex: 0,
+  });
 
   // เช็กขนาดหน้าจอ
   // ถ้าหน้าจอเล็กกว่า 640px จะใช้ popup แบบ compact
@@ -189,12 +227,6 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
     };
   }, []);
 
-  // เมื่อเปลี่ยน marker ที่เลือก หรือเปลี่ยนโหมด compact
-  // ให้กลับไปเริ่มดู hotspot ตัวแรกใหม่
-  useEffect(() => {
-    setCompactHotspotIndex(0);
-  }, [selectedMarker?.id, isCompactPopup]);
-
   // ถ้าไม่มีหมุดเลย หรือไม่มี marker ที่เลือก
   // หรือ marker ที่เลือกไม่มี hotspot
   // ก็ไม่ render แผนที่ และแสดงข้อความแทน
@@ -202,8 +234,16 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
     return <div className="mapPlaceholder">No hotspot with GPS is available for the map yet.</div>;
   }
 
+  // [เพิ่มใหม่ล่าสุด] เดิม logic นี้ดูจากตัวเลข hotspot อย่างเดียว
+  // เวอร์ชันล่าสุดจะเช็กก่อนว่า hotspot ที่จำไว้นั้นเป็นของ marker ตัวที่กำลังเปิดอยู่จริงไหม
+  // ถ้าใช่ ค่อยใช้ index เดิมต่อ
+  // ถ้าไม่ใช่ ให้เริ่มกลับไปที่ hotspot แรกของ marker ใหม่ทันที
+  // ภาษาคนทั่วไป: เวลาเปลี่ยนไปกดอีกหมุดหนึ่ง ระบบจะไม่เผลอเอาตำแหน่ง hotspot ของหมุดเก่ามาปนกับหมุดใหม่
   // ป้องกันไม่ให้ index หลุดเกินจำนวน hotspot จริง
-  const activeCompactHotspotIndex = Math.min(compactHotspotIndex, selectedMarker.hotspots.length - 1);
+  const activeCompactHotspotIndex =
+    compactSelection.markerId === selectedMarker.id && isCompactPopup
+      ? Math.min(compactSelection.hotspotIndex, selectedMarker.hotspots.length - 1)
+      : 0;
 
   // ถ้าเป็น compact popup จะแสดงทีละ hotspot
   // ถ้าไม่ compact จะแสดง hotspot ทุกตัวใน popup เดียว
@@ -297,7 +337,10 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
                       role="tab"
                       aria-selected={hotspotIndex === activeCompactHotspotIndex}
                       className={`mapPopupCompactRailButton ${hotspotIndex === activeCompactHotspotIndex ? "selected" : ""}`}
-                      onClick={() => setCompactHotspotIndex(hotspotIndex)}
+                      // [เพิ่มใหม่ล่าสุด] เดิมตอนกดเลือก hotspot จะจำแค่เลขลำดับ
+                      // ตอนนี้เปลี่ยนเป็นจำทั้งหมุดที่เปิดอยู่และลำดับ hotspot ที่เลือก
+                      // ผลคือ popup แบบ mobile/compact จะจำข้อมูลได้ถูกต้องว่าเลือกของหมุดไหนอยู่
+                      onClick={() => setCompactSelection({ markerId: selectedMarker.id, hotspotIndex })}
                     >
                       {hotspot.hotspotLabel || `Hotspot ${hotspotIndex + 1}`}
                     </button>

@@ -1,9 +1,19 @@
 import type { MapMarkerItem } from "./MapView";
 
+// ==============================
+// ส่วนนี้คืออะไร
+// ==============================
+// ไฟล์นี้เป็นไฟล์ helper ของหน้า upload
+// หน้าที่ของมันคือเก็บ type และฟังก์ชันย่อยต่าง ๆ
+// เพื่อไม่ให้ไฟล์ page.tsx ยาวและรกเกินไป
+
 // ไฟล์นี้เป็นไฟล์ช่วยของหน้า upload
 // เอาไว้เก็บ type และฟังก์ชันย่อยต่าง ๆ
 // เพื่อไม่ให้ไฟล์ page.tsx ยาวและรกเกินไป
 
+// ==============================
+// ส่วนกำหนดชนิดข้อมูลพื้นฐาน
+// ==============================
 // วิธีที่ระบบใช้บอกว่า hotspot ไปตรงกับอุปกรณ์แบบไหน
 export type MatchMethod = "inside" | "nearest" | "unknown";
 
@@ -13,9 +23,30 @@ export type MatchMethod = "inside" | "nearest" | "unknown";
 // relative = มีแค่ค่าความร้อนแบบเปรียบเทียบ
 export type ThermalMode = "none" | "absolute" | "relative";
 
+// ==============================
+// ส่วนนี้คืออะไร
+// ==============================
+// อันนี้คือกรอบอ้างอิงแบบ normalized
+// ใช้เก็บตำแหน่งเป็นสัดส่วนของรูป ไม่ใช่พิกเซลจริง
+// ทำให้เอาไปใช้กับรูปหลายขนาดได้ง่ายขึ้น
+
+// [แก้ไขล่าสุดใน version นี้]
+// เพิ่มชนิดข้อมูล ROI แบบ normalized
+// ใช้เก็บกรอบ reference area ในรูปแบบ x, y, width, height
+// เพื่อให้ frontend รู้ว่าผู้ใช้เลือกพื้นที่อ้างอิงตรงไหนของภาพ
+export type NormalizedRoi = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 // ประเภทไฟล์ที่ระบบมองเห็น
 type PairKind = "thermal" | "rgb" | "unknown";
 
+// ==============================
+// ส่วนข้อมูล hotspot / detection
+// ==============================
 // ข้อมูลของ hotspot / detection 1 จุด
 export type Detection = {
   // ตำแหน่งกรอบของจุดที่ตรวจเจอ
@@ -62,6 +93,9 @@ export type Detection = {
   action_required?: string | null;
 };
 
+// ==============================
+// ส่วนข้อมูลการจับคู่ไฟล์
+// ==============================
 // คู่ไฟล์ที่จับคู่สำเร็จแล้ว
 // 1 คู่ = thermal 1 ไฟล์ + rgb 1 ไฟล์
 export type MatchedPair = {
@@ -95,21 +129,62 @@ export type FailedPair = {
   message: string;
 };
 
+// ==============================
+// ส่วนผลวิเคราะห์ที่หน้าเว็บใช้
+// ==============================
 // ผลวิเคราะห์ที่ frontend จะเอาไปใช้ต่อ
 export type AnalysisResult = {
   id: string;
   key: string;
   displayName: string;
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // fileId คือ id ของไฟล์/งานจาก backend
+  // ใช้เอาไว้ผูกข้อมูลผลวิเคราะห์กับงานจริงในระบบ
+  fileId: string;
+
   thermalFileName: string;
   rgbFileName: string;
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // thermalImage = รูป thermal ดั้งเดิม
+  // rgbImage = รูป RGB ดั้งเดิม
+  // fixedRangeImage = รูป thermal ที่ fix ช่วงสีไว้แล้ว
+  // ช่วยให้หน้าเว็บสามารถสลับดูรูปแต่ละแบบได้
+  thermalImage: string | null;
+  rgbImage: string | null;
+  fixedRangeImage: string | null;
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // annotatedImage = รูปที่มีการวาดกรอบผลวิเคราะห์เพื่อเอาไปแสดงหลัก
+  // annotatedImageCamera = รูปที่วาดกรอบบนภาพมุมกล้องปกติ
+  // annotatedImageFixedRange = รูปที่วาดกรอบบนภาพ fixed range
   annotatedImage: string | null;
+  annotatedImageCamera: string | null;
+  annotatedImageFixedRange: string | null;
+
   detections: Detection[];
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // autoDetections เก็บสำเนาของ detection ตอนเริ่มต้น
+  // เอาไว้ใช้เป็นค่าตั้งต้นก่อนมีการแก้ไข/ปรับแต่งในหน้าเว็บ
+  autoDetections: Detection[];
+
   latitude: number | null;
   longitude: number | null;
   thermalAvailable: boolean | null;
   thermalError: string;
   thermalMode: ThermalMode | null;
   referenceTemperature: number | null;
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // autoReferenceTemperature = ค่า reference ที่ระบบคำนวณให้อัตโนมัติ
+  // referenceSource = บอกว่าค่า reference มาจาก auto หรือ roi
+  // referenceRoi = พื้นที่อ้างอิงที่ผู้ใช้เลือกเอง (ถ้ามี)
+  autoReferenceTemperature: number | null;
+  referenceSource: "auto" | "roi";
+  referenceRoi: NormalizedRoi | null;
+
   message: string;
   requestId: string;
 };
@@ -130,6 +205,9 @@ const RGB_TOKENS = new Set(["rgb", "visual", "visible", "wide", "vis", "v", "w"]
 // รวมคำทั้งหมดที่ใช้บอกบทบาทของไฟล์
 const ROLE_TOKENS = new Set([...THERMAL_TOKENS, ...RGB_TOKENS]);
 
+// ==============================
+// ส่วนช่วยแยกและอ่านชื่อไฟล์
+// ==============================
 // ตัดนามสกุลไฟล์ออก
 // เช่น abc.jpg -> abc
 function getFileStem(fileName: string) {
@@ -267,6 +345,9 @@ async function assignUnknownPairByImageSize(group: PairCandidate[]) {
   };
 }
 
+// ==============================
+// ส่วนจับคู่ไฟล์ thermal / rgb
+// ==============================
 // ฟังก์ชันหลักของการจับคู่ไฟล์
 // รับไฟล์ทั้งหมดเข้ามา แล้วพยายามจับว่าไฟล์ไหนเป็นคู่กัน
 export async function matchUploadPairs(files: File[]) {
@@ -442,6 +523,9 @@ export function describeBackendStep(step: string | null | undefined, details: Re
   }
 }
 
+// ==============================
+// ส่วนแปลงข้อมูลจาก backend เป็นรูปแบบที่หน้าเว็บใช้
+// ==============================
 // แปลงข้อมูลที่ backend ส่งกลับมา
 // ให้เป็นรูปแบบที่หน้าเว็บใช้งานง่าย
 export function toAnalysisResult(pair: MatchedPair, responseData: Record<string, unknown>, requestId: string): AnalysisResult {
@@ -455,29 +539,152 @@ export function toAnalysisResult(pair: MatchedPair, responseData: Record<string,
     thermalMode = responseData.thermal_mode;
   }
 
+  // [แก้ไขล่าสุดใน version นี้]
+  // cloneDetections ถูกใช้เพื่อแยกข้อมูลออกจาก object ต้นทาง
+  // ป้องกันปัญหาเวลาแก้ค่า detections ฝั่ง frontend แล้วกระทบค่าต้นฉบับโดยไม่ตั้งใจ
+  const detections = Array.isArray(responseData.detections) ? cloneDetections(responseData.detections as Detection[]) : [];
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // ดึงค่า reference temperature ที่ backend ส่งมา
+  const referenceTemperature =
+    typeof responseData.reference_temperature === "number" ? responseData.reference_temperature : null;
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // annotatedImageCamera คือรูปผลลัพธ์ที่วาดกรอบบนภาพ camera view
+  // ถ้า backend ยังไม่ส่ง field ใหม่มา จะ fallback ไปใช้ annotated_image เดิมแทน
+  const annotatedImageCamera =
+    typeof responseData.annotated_image_camera === "string" && responseData.annotated_image_camera.trim()
+      ? toAbsoluteImageUrl(responseData.annotated_image_camera)
+      : typeof responseData.annotated_image === "string" && responseData.annotated_image.trim()
+        ? toAbsoluteImageUrl(responseData.annotated_image)
+        : null;
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // annotatedImageFixedRange คือรูปผลลัพธ์อีกแบบที่ใช้ fixed color range
+  const annotatedImageFixedRange =
+    typeof responseData.annotated_image_fixed_range === "string" && responseData.annotated_image_fixed_range.trim()
+      ? toAbsoluteImageUrl(responseData.annotated_image_fixed_range)
+      : null;
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // thermalImage = รูป thermal ที่อัปโหลดเข้าไป
+  const thermalImage =
+    typeof responseData.uploaded_image === "string" && responseData.uploaded_image.trim()
+      ? toAbsoluteImageUrl(responseData.uploaded_image)
+      : null;
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // rgbImage = รูป RGB ที่อัปโหลดเข้าไป
+  const rgbImage =
+    typeof responseData.uploaded_rgb_image === "string" && responseData.uploaded_rgb_image.trim()
+      ? toAbsoluteImageUrl(responseData.uploaded_rgb_image)
+      : null;
+
+  // [แก้ไขล่าสุดใน version นี้]
+  // fixedRangeImage = รูป thermal ที่แปลงช่วงสีให้คงที่
+  const fixedRangeImage =
+    typeof responseData.fixed_range_image === "string" && responseData.fixed_range_image.trim()
+      ? toAbsoluteImageUrl(responseData.fixed_range_image)
+      : null;
+
   return {
     id: pair.id,
     key: pair.key,
     displayName: pair.displayName,
+
+    // [แก้ไขล่าสุดใน version นี้]
+    // รับ file id จาก backend ถ้ามี
+    fileId: typeof responseData.file_id === "string" ? responseData.file_id : "",
+
     thermalFileName: pair.thermal.name,
     rgbFileName: pair.rgb.name,
-    annotatedImage:
-      typeof responseData.annotated_image === "string" && responseData.annotated_image.trim()
-        ? toAbsoluteImageUrl(responseData.annotated_image)
-        : null,
-    detections: Array.isArray(responseData.detections) ? (responseData.detections as Detection[]) : [],
+    thermalImage,
+    rgbImage,
+    fixedRangeImage,
+
+    // [แก้ไขล่าสุดใน version นี้]
+    // ให้ annotatedImage หลักชี้ไปที่ภาพ camera ก่อน
+    // เพื่อให้หน้าเว็บใช้งาน field เดิมต่อได้โดยไม่ต้องแก้ทุกจุด
+    annotatedImage: annotatedImageCamera,
+    annotatedImageCamera,
+    annotatedImageFixedRange,
+    detections,
+
+    // [แก้ไขล่าสุดใน version นี้]
+    // เก็บสำเนาค่าเริ่มต้นไว้เป็น autoDetections
+    autoDetections: cloneDetections(detections),
+
     latitude: typeof responseData.latitude === "number" ? responseData.latitude : null,
     longitude: typeof responseData.longitude === "number" ? responseData.longitude : null,
     thermalAvailable: typeof responseData.thermal_available === "boolean" ? responseData.thermal_available : null,
     thermalError: typeof responseData.thermal_error === "string" ? responseData.thermal_error : "",
     thermalMode,
-    referenceTemperature:
-      typeof responseData.reference_temperature === "number" ? responseData.reference_temperature : null,
+    referenceTemperature,
+
+    // [แก้ไขล่าสุดใน version นี้]
+    // ตอนเริ่มต้นให้ค่า autoReferenceTemperature เท่ากับค่า reference ที่ระบบคำนวณมา
+    autoReferenceTemperature: referenceTemperature,
+
+    // [แก้ไขล่าสุดใน version นี้]
+    // ค่าเริ่มต้นของแหล่งที่มาคือ auto
+    referenceSource: "auto",
+
+    // [แก้ไขล่าสุดใน version นี้]
+    // ตอนรับข้อมูลครั้งแรกยังไม่มี roi ที่ผู้ใช้เลือก จึงเป็น null
+    referenceRoi: null,
+
     message: typeof responseData.message === "string" ? responseData.message : "",
     requestId,
   };
 }
 
+// ==============================
+// ส่วนช่วย clone object
+// ==============================
+// อธิบาย: clone คือการก็อปปี้ข้อมูลออกมาอีกชุด
+// เพื่อให้เวลาแก้ไขค่าชุดใหม่ ไม่ไปกระทบค่าต้นฉบับ
+
+// [แก้ไขล่าสุดใน version นี้]
+// clone ROI ออกมาเป็น object ใหม่
+export function cloneNormalizedRoi(roi: NormalizedRoi | null | undefined): NormalizedRoi | null {
+  if (!roi) {
+    return null;
+  }
+
+  return {
+    x: roi.x,
+    y: roi.y,
+    width: roi.width,
+    height: roi.height,
+  };
+}
+
+// [แก้ไขล่าสุดใน version นี้]
+// clone detection 1 ตัวแบบลึกขึ้นใน field ที่เป็น array
+// เพื่อกันปัญหาอ้างอิง object เดิมร่วมกัน
+export function cloneDetection(detection: Detection): Detection {
+  return {
+    ...detection,
+    bbox: [...detection.bbox] as [number, number, number, number],
+    thermal_bbox: detection.thermal_bbox ? [...detection.thermal_bbox] as [number, number, number, number] : undefined,
+    hotspot_center: detection.hotspot_center ? [...detection.hotspot_center] as [number, number] : detection.hotspot_center,
+    max_point: detection.max_point ? [...detection.max_point] as [number, number] : detection.max_point,
+    min_point: detection.min_point ? [...detection.min_point] as [number, number] : detection.min_point,
+    equipment_bbox: detection.equipment_bbox
+      ? ([...detection.equipment_bbox] as [number, number, number, number])
+      : detection.equipment_bbox,
+  };
+}
+
+// [แก้ไขล่าสุดใน version นี้]
+// clone detection ทั้ง list
+export function cloneDetections(detections: Detection[]): Detection[] {
+  return detections.map((detection) => cloneDetection(detection));
+}
+
+// ==============================
+// ส่วนสรุปข้อความเพื่อแสดงใน UI
+// ==============================
 // คืนชื่ออุปกรณ์ ถ้าไม่มีข้อมูลก็ใช้ unknown
 export function getEquipmentLabel(detection: Detection) {
   return detection.equipment_class ?? "unknown";
@@ -561,6 +768,9 @@ export function getMarkerId(pairIndex: number, detectionIndex: number) {
   return `${pairIndex}:${detectionIndex}`;
 }
 
+// ==============================
+// ส่วนสร้าง marker สำหรับแผนที่
+// ==============================
 // แปลงผลวิเคราะห์ทั้งหมดให้เป็น marker สำหรับแผนที่
 export function buildMapMarkers(results: AnalysisResult[]): MapMarkerItem[] {
   return results.flatMap((result, pairIndex) => {

@@ -2,26 +2,32 @@
 
 // เพิ่ม useEffect เพราะหน้าใหม่มี polling progress และจับเวลา
 // เพิ่ม ChangeEvent เพื่อระบุ type ของ event ตอนเลือกไฟล์ให้ชัดเจน
-import { useEffect, useState, type ChangeEvent } from "react";
+// [เพิ่มใหม่ล่าสุด]
+// เพิ่ม ReactPointerEvent เพื่อรองรับการลากเมาส์/นิ้วบนรูปสำหรับวาดกรอบ ROI อ้างอิง
+import { useEffect, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import dynamic from "next/dynamic";
 
-// [เพิ่มใหม่]
 // ใช้ next/image แทน img ธรรมดาในโค้ดใหม่
 // เพื่อให้เข้ากับแนวทางของ Next.js และจัดการรูปได้เป็นระบบมากขึ้น
 import Image from "next/image";
 
-// [เพิ่มใหม่]
 // โค้ดใหม่ย้าย type หลายตัวไปไว้ในไฟล์ uploadUtils แล้ว
 // ทำให้ไฟล์หน้านี้ไม่ต้องแบก type และ helper ทุกอย่างไว้เอง
-import type { AnalysisResult, FailedPair, MatchedPair, PairingIssue } from "./uploadUtils";
+// [เพิ่มใหม่ล่าสุด]
+// เพิ่ม Detection และ NormalizedRoi เพื่อใช้จัดการข้อมูล hotspot และกรอบ ROI ที่วาดบนภาพ
+import type { AnalysisResult, Detection, FailedPair, MatchedPair, NormalizedRoi, PairingIssue } from "./uploadUtils";
 
-// [เพิ่มใหม่]
 // helper หลายตัวที่เคยอยู่ในไฟล์เก่า ถูกย้ายไป import จาก uploadUtils
 // เช่น createRequestId, describeBackendStep, getResponseRequestId
 // รวมถึง helper ใหม่สำหรับ map และการสรุปข้อมูล hotspot
 import {
   DEGREE_C,
   buildMapMarkers,
+  // [เพิ่มใหม่ล่าสุด]
+  // helper 2 ตัวนี้ใช้คัดลอกข้อมูล ROI และ detection แบบปลอดภัย
+  // ภาษาคนง่าย ๆ คือ ป้องกันการแก้ค่าต้นฉบับโดยไม่ตั้งใจ
+  cloneDetections,
+  cloneNormalizedRoi,
   createRequestId,
   describeBackendStep,
   getEquipmentLabel,
@@ -37,14 +43,30 @@ import {
 // ป้องกันปัญหา SSR กับ Leaflet คือ ไม่ต้องพยายาม Render Component นี้ที่ฝั่ง Server ให้รอจนกว่าไฟล์ JavaScript จะไปถึง Browser ของผู้ใช้ก่อนค่อยเริ่มทำงาน
 const MapView = dynamic(() => import("./MapView"), { ssr: false });
 
-// [เพิ่มใหม่]
 // ใช้กำหนดโทนของข้อความสถานะบนหน้า
 // default = ข้อความทั่วไป
 // warning = ข้อความเตือน
 type MessageTone = "default" | "warning";
 
+type BatchRunContext = {
+  batchRunId: string;
+  fileTotal: number;
+  fileNames: string;
+  pairIndex: number;
+  pairTotal: number;
+  pairLabel: string;
+  thermalFileName: string;
+  rgbFileName: string;
+};
+
 // เหมือนเดิม: อ่าน backend URL จาก env
 const backendBaseUrl = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
+
+// [เพิ่มใหม่ล่าสุด]
+// กำหนดช่วงอุณหภูมิแบบคงที่สำหรับภาพ fixed range
+// ทำให้เอาหลายภาพมาเทียบกันตรง ๆ ได้ง่ายขึ้นว่า สีเดียวกันหมายถึงช่วงอุณหภูมิใกล้เคียงกัน
+const FIXED_RANGE_MIN_C = 25;
+const FIXED_RANGE_MAX_C = 40;
 
 // helper เหมือนเดิม: แปลงวินาที -> mm:ss
 function formatElapsedTime(totalSeconds: number) {
@@ -53,11 +75,106 @@ function formatElapsedTime(totalSeconds: number) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-// [เพิ่มใหม่]
 // helper สำหรับเช็กว่า value เป็น object แบบ record หรือไม่
 // ใช้ช่วยกัน error เวลาตรวจ response จาก backend
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+// [เพิ่มใหม่ล่าสุด]
+// กลุ่ม type และ helper ด้านล่างนี้ใช้สำหรับฟีเจอร์ ROI
+// ROI = กรอบสี่เหลี่ยมที่ผู้ใช้ลากคลุมพื้นที่อ้างอิงบนภาพ
+// ภาษาคนง่าย ๆ คือ เลือก "บริเวณตัวอย่าง" เพื่อให้ระบบเอาไปคำนวณอุณหภูมิอ้างอิงใหม่
+type NormalizedPoint = {
+  x: number;
+  y: number;
+};
+
+type RoiDragState = {
+  pairId: string;
+  pointerId: number;
+  start: NormalizedPoint;
+  current: NormalizedPoint;
+};
+
+function clamp01(value: number) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function getNormalizedPointFromClient(clientX: number, clientY: number, rect: DOMRect): NormalizedPoint {
+  if (rect.width <= 0 || rect.height <= 0) {
+    return { x: 0, y: 0 };
+  }
+
+  return {
+    x: clamp01((clientX - rect.left) / rect.width),
+    y: clamp01((clientY - rect.top) / rect.height),
+  };
+}
+
+function createNormalizedRoi(start: NormalizedPoint, end: NormalizedPoint): NormalizedRoi | null {
+  const x1 = Math.min(start.x, end.x);
+  const y1 = Math.min(start.y, end.y);
+  const x2 = Math.max(start.x, end.x);
+  const y2 = Math.max(start.y, end.y);
+  const width = x2 - x1;
+  const height = y2 - y1;
+
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return {
+    x: x1,
+    y: y1,
+    width,
+    height,
+  };
+}
+
+function getRoiStyle(roi: NormalizedRoi) {
+  return {
+    left: `${roi.x * 100}%`,
+    top: `${roi.y * 100}%`,
+    width: `${roi.width * 100}%`,
+    height: `${roi.height * 100}%`,
+  };
+}
+
+function parseNormalizedRoi(value: unknown): NormalizedRoi | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const x = value.x;
+  const y = value.y;
+  const width = value.width;
+  const height = value.height;
+  if (!isFiniteNumber(x) || !isFiniteNumber(y) || !isFiniteNumber(width) || !isFiniteNumber(height)) {
+    return null;
+  }
+
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return { x, y, width, height };
+}
+
+// [เพิ่มใหม่ล่าสุด]
+// helper สำหรับตั้งชื่อไฟล์ตอนดาวน์โหลดภาพ
+// เช่น เติม _fixed-range ต่อท้ายชื่อเดิมโดยยังคงนามสกุลไฟล์ไว้
+function buildDownloadFileName(fileName: string, suffix = "", fallbackExtension = ".jpg") {
+  const lastDot = fileName.lastIndexOf(".");
+  if (lastDot > 0) {
+    return `${fileName.slice(0, lastDot)}${suffix}${fileName.slice(lastDot)}`;
+  }
+
+  return `${fileName}${suffix}${fallbackExtension}`;
 }
 
 export default function Home() {
@@ -66,19 +183,16 @@ export default function Home() {
   // ------------------------------
   const [message, setMessage] = useState("");
 
-  // [เพิ่มใหม่]
-  // เก็บโทนข้อความ เพื่อให้เลือก style ได้ว่าข้อความนี้เป็นคำเตือนหรือไม่
+    // เก็บโทนข้อความ เพื่อให้เลือก style ได้ว่าข้อความนี้เป็นคำเตือนหรือไม่
   const [messageTone, setMessageTone] = useState<MessageTone>("default");
 
   /*
-    [เพิ่มใหม่]
     progressMessage = ข้อความบอกว่า backend กำลังทำขั้นตอนไหน
     เช่น Uploading thermal image..., Running RGB equipment model...
   */
   const [progressMessage, setProgressMessage] = useState("");
 
   /*
-    [เพิ่มใหม่]
     elapsedSeconds = เวลาที่ผ่านไประหว่างการประมวลผล
     runStartedAt   = timestamp ตอนเริ่มงาน
   */
@@ -86,7 +200,6 @@ export default function Home() {
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
 
   /*
-    [เพิ่มใหม่]
     requestId = id ของ request รอบปัจจุบัน
     ใช้ไว้ตาม progress จาก backend และ debug เวลา error
   */
@@ -155,6 +268,15 @@ export default function Home() {
   // ใช้แยก layout ระหว่าง mobile กับ desktop
   const [isMobileViewport, setIsMobileViewport] = useState(false);
 
+  // [เพิ่มใหม่ล่าสุด]
+  // 3 state นี้ใช้คุมฟีเจอร์ ROI
+  // pendingReferenceRois = กรอบที่ผู้ใช้ลากไว้แต่ยังไม่กดส่ง
+  // roiDragState        = สถานะระหว่างกำลังลาก
+  // roiApplyingPairId   = ระบุว่าคู่ภาพไหนกำลังส่ง ROI ไปคำนวณที่ backend
+  const [pendingReferenceRois, setPendingReferenceRois] = useState<Record<string, NormalizedRoi | null>>({});
+  const [roiDragState, setRoiDragState] = useState<RoiDragState | null>(null);
+  const [roiApplyingPairId, setRoiApplyingPairId] = useState<string | null>(null);
+
   // [เพิ่มใหม่]
   // คู่ภาพที่กำลังถูกเลือกดูอยู่
   const selectedPair = results[selectedPairIndex] ?? null;
@@ -169,6 +291,35 @@ export default function Home() {
   // [เพิ่มใหม่]
   // hotspot ที่กำลังถูกเลือกดูอยู่จริง
   const selectedDetection = selectedPair?.detections[safeSelectedDetectionIndex] ?? null;
+
+  // [เพิ่มใหม่ล่าสุด]
+  // กลุ่มตัวแปรนี้คือ "ภาพและสถานะที่ใช้กับหน้าดูผลแบบละเอียด"
+  // ภาษาคนง่าย ๆ คือ เลือกไว้ล่วงหน้าว่าตอนนี้หน้าจอควรใช้รูปไหน กด ROI ได้ไหม และปุ่มไหนควรเปิด/ปิด
+  const selectedCameraImage = selectedPair?.annotatedImageCamera ?? selectedPair?.annotatedImage ?? null;
+  const selectedFixedRangeImage = selectedPair?.annotatedImageFixedRange ?? null;
+  const selectedThermalDownloadImage = selectedPair?.thermalImage ?? null;
+  const selectedRgbImage = selectedPair?.rgbImage ?? null;
+  const selectedFixedRangeDownloadImage = selectedPair?.fixedRangeImage ?? null;
+  const liveRoiDraft =
+    selectedPair && roiDragState && roiDragState.pairId === selectedPair.id
+      ? createNormalizedRoi(roiDragState.start, roiDragState.current)
+      : null;
+  const selectedPairPendingRoi = selectedPair ? pendingReferenceRois[selectedPair.id] ?? null : null;
+  const activeReferenceRoi = liveRoiDraft ?? selectedPairPendingRoi ?? selectedPair?.referenceRoi ?? null;
+  const canShowReferenceRoiUi =
+    selectedPair !== null &&
+    (selectedCameraImage !== null || selectedFixedRangeImage !== null) &&
+    (selectedPair.thermalAvailable !== false ||
+      selectedPair.referenceTemperature !== null ||
+      selectedPair.thermalMode === "absolute");
+  const canApplyReferenceRoiBackend = selectedPair !== null && selectedPair.fileId.trim() !== "";
+  const isApplyingReferenceRoi = selectedPair !== null && roiApplyingPairId === selectedPair.id;
+  const canApplyReferenceRoi =
+    canShowReferenceRoiUi && canApplyReferenceRoiBackend && activeReferenceRoi !== null && !isApplyingReferenceRoi;
+  const canResetReferenceRoi =
+    canShowReferenceRoiUi &&
+    !isApplyingReferenceRoi &&
+    (selectedPair?.referenceSource === "roi" || activeReferenceRoi !== null);
 
   // [เพิ่มใหม่]
   // สร้าง marker ทั้งหมดสำหรับ map จาก results ทุกตัว
@@ -202,6 +353,35 @@ export default function Home() {
     setMessageTone(tone);
   }
 
+  // [เพิ่มใหม่ล่าสุด]
+  // ดาวน์โหลดรูปที่หน้าเว็บกำลังแสดงอยู่ลงเครื่องผู้ใช้
+  // ใช้ได้กับรูป thermal, RGB และ fixed-range
+  async function downloadImageAsset(assetUrl: string | null, fileName: string) {
+    if (!assetUrl) {
+      showMessage("This image is unavailable for download.", "warning");
+      return;
+    }
+
+    try {
+      const response = await fetch(assetUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const imageBlob = await response.blob();
+      const objectUrl = window.URL.createObjectURL(imageBlob);
+      const downloadLink = document.createElement("a");
+      downloadLink.href = objectUrl;
+      downloadLink.download = fileName;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      downloadLink.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    } catch {
+      showMessage("Failed to download the selected image.", "warning");
+    }
+  }
+
   /*
     reset เฉพาะผลวิเคราะห์
     ไม่ลบไฟล์ที่ผู้ใช้เลือกไว้ เพื่อให้กด Analyze ใหม่ได้ทันที
@@ -217,6 +397,9 @@ export default function Home() {
     setActivePairIndex(0);
     setActivePairTotal(0);
     setActivePairLabel("");
+    setPendingReferenceRois({});
+    setRoiDragState(null);
+    setRoiApplyingPairId(null);
   }
 
   /*
@@ -289,7 +472,6 @@ export default function Home() {
   }, [loading, runStartedAt]);
 
   /*
-    [เพิ่มใหม่]
     desktop = 6 ช่องคงที่ต่อแถว
     mobile/tablet = แถบแนวนอนเลื่อนได้
   */
@@ -307,6 +489,226 @@ export default function Home() {
       mediaQuery.removeEventListener("change", syncViewport);
     };
   }, []);
+
+  // [เพิ่มใหม่ล่าสุด]
+  // helper สำหรับแก้ผลวิเคราะห์ "เฉพาะคู่ภาพที่ต้องการ" โดยไม่กระทบตัวอื่น
+  // ใช้บ่อยกับตอน apply/reset ROI หลัง backend ส่งผลรอบใหม่กลับมา
+  function updateResultById(resultId: string, updater: (result: AnalysisResult) => AnalysisResult) {
+    setResults((currentResults) =>
+      currentResults.map((result) => (result.id === resultId ? updater(result) : result)),
+    );
+  }
+
+  // [เพิ่มใหม่ล่าสุด]
+  // กลุ่มฟังก์ชันด้านล่างนี้คือวงจรการลาก ROI บนภาพ
+  // ลำดับคือ เริ่มลาก -> ระหว่างลาก -> ปล่อยเมาส์/นิ้ว -> ได้กรอบ ROI
+  function getPointerRoiFromEvent(event: ReactPointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+
+    return getNormalizedPointFromClient(event.clientX, event.clientY, rect);
+  }
+
+  function handleRoiPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!selectedPair || !canShowReferenceRoiUi || isApplyingReferenceRoi) {
+      return;
+    }
+
+    const startPoint = getPointerRoiFromEvent(event);
+    if (!startPoint) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setRoiDragState({
+      pairId: selectedPair.id,
+      pointerId: event.pointerId,
+      start: startPoint,
+      current: startPoint,
+    });
+  }
+
+  function handleRoiPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!selectedPair || !roiDragState) {
+      return;
+    }
+
+    if (roiDragState.pairId !== selectedPair.id || roiDragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const currentPoint = getPointerRoiFromEvent(event);
+    if (!currentPoint) {
+      return;
+    }
+
+    setRoiDragState((currentDragState) =>
+      currentDragState &&
+      currentDragState.pairId === selectedPair.id &&
+      currentDragState.pointerId === event.pointerId
+        ? { ...currentDragState, current: currentPoint }
+        : currentDragState,
+    );
+  }
+
+  function finishRoiPointer(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!selectedPair || !roiDragState) {
+      return;
+    }
+
+    if (roiDragState.pairId !== selectedPair.id || roiDragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // ignore capture release failures when pointer already ended
+    }
+
+    const endPoint = getPointerRoiFromEvent(event) ?? roiDragState.current;
+    const nextRoi = createNormalizedRoi(roiDragState.start, endPoint);
+    setRoiDragState(null);
+
+    if (!nextRoi) {
+      return;
+    }
+
+    setPendingReferenceRois((currentRois) => ({
+      ...currentRois,
+      [selectedPair.id]: nextRoi,
+    }));
+  }
+
+  function handleRoiPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!roiDragState || roiDragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // ignore capture release failures when pointer already ended
+    }
+
+    setRoiDragState(null);
+  }
+
+  // [เพิ่มใหม่ล่าสุด]
+  // ส่ง ROI ที่ผู้ใช้เลือกไปให้ backend คำนวณ reference temperature ใหม่
+  // ภาษาคนง่าย ๆ คือ ให้ระบบใช้ "กรอบที่เราวาด" เป็นจุดอ้างอิงแทนค่าอัตโนมัติเดิม
+  async function applyReferenceRoi() {
+    if (!selectedPair || !activeReferenceRoi || !canApplyReferenceRoi) {
+      return;
+    }
+
+    const roiRequestId = createRequestId();
+    setRoiApplyingPairId(selectedPair.id);
+    setRequestId(roiRequestId);
+
+    try {
+      const roiResponse = await fetch(`${backendBaseUrl}/reference-roi`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-request-id": roiRequestId,
+        },
+        body: JSON.stringify({
+          file_id: selectedPair.fileId,
+          roi: activeReferenceRoi,
+          detections: selectedPair.detections,
+        }),
+      });
+
+      const responseData = await roiResponse.json().catch(() => null);
+      const headerRequestId = roiResponse.headers.get("x-request-id") ?? "";
+      const responseRequestId = getResponseRequestId(responseData, headerRequestId || roiRequestId);
+
+      if (!roiResponse.ok || !isRecord(responseData) || responseData.success !== true) {
+        const fallbackMessage = roiResponse.ok
+          ? "Failed to apply the selected ROI reference."
+          : `Backend returned HTTP ${roiResponse.status} while applying the ROI reference.`;
+
+        throw {
+          requestId: responseRequestId,
+          message:
+            isRecord(responseData) && typeof responseData.message === "string" && responseData.message.trim()
+              ? responseData.message
+              : fallbackMessage,
+        };
+      }
+
+      const nextDetections = Array.isArray(responseData.detections)
+        ? cloneDetections(responseData.detections as Detection[])
+        : null;
+      const nextReferenceRoi = parseNormalizedRoi(responseData.roi) ?? cloneNormalizedRoi(activeReferenceRoi);
+      const nextReferenceTemperature =
+        typeof responseData.reference_temperature === "number" ? responseData.reference_temperature : null;
+
+      if (nextDetections === null || nextReferenceTemperature === null || nextReferenceRoi === null) {
+        throw {
+          requestId: responseRequestId,
+          message: "Backend returned an incomplete ROI recalculation response.",
+        };
+      }
+
+      setRequestId(responseRequestId);
+      updateResultById(selectedPair.id, (result) => ({
+        ...result,
+        detections: nextDetections,
+        referenceTemperature: nextReferenceTemperature,
+        referenceSource: "roi",
+        referenceRoi: cloneNormalizedRoi(nextReferenceRoi),
+        requestId: responseRequestId,
+      }));
+      setPendingReferenceRois((currentRois) => ({
+        ...currentRois,
+        [selectedPair.id]: nextReferenceRoi,
+      }));
+      showMessage(`Applied ROI reference for ${selectedPair.displayName}.`);
+    } catch (error) {
+      const failedRequestId = isRecord(error) && typeof error.requestId === "string" ? error.requestId : "";
+      const failedMessage =
+        isRecord(error) && typeof error.message === "string" && error.message.trim()
+          ? error.message
+          : "Cannot recalculate ROI reference right now.";
+
+      if (failedRequestId) {
+        setRequestId(failedRequestId);
+      }
+
+      showMessage(failedMessage, "warning");
+    } finally {
+      setRoiApplyingPairId(null);
+    }
+  }
+
+  // [เพิ่มใหม่ล่าสุด]
+  // ล้าง ROI ที่วาดเอง แล้วกลับไปใช้ค่าอ้างอิงอัตโนมัติจากระบบ
+  function resetReferenceRoi() {
+    if (!selectedPair || !canResetReferenceRoi) {
+      return;
+    }
+
+    updateResultById(selectedPair.id, (result) => ({
+      ...result,
+      detections: cloneDetections(result.autoDetections),
+      referenceTemperature: result.autoReferenceTemperature,
+      referenceSource: "auto",
+      referenceRoi: null,
+    }));
+    setPendingReferenceRois((currentRois) => ({
+      ...currentRois,
+      [selectedPair.id]: null,
+    }));
+    setRoiDragState((currentDragState) =>
+      currentDragState?.pairId === selectedPair.id ? null : currentDragState,
+    );
+    showMessage(`Reset ${selectedPair.displayName} back to automatic reference.`);
+  }
 
   /*
     ตอนนี้เลือกไฟล์ทีเดียวได้หลายภาพ
@@ -349,7 +751,12 @@ export default function Home() {
     helper อัปโหลดทีละไฟล์เหมือนเดิม
     ยังใช้ flow เดิมคือ /upload-file ก่อน แล้วค่อย /analyze
   */
-  async function uploadSingleFile(file: File, kind: "thermal" | "rgb", existingFileId?: string) {
+  async function uploadSingleFile(
+    file: File,
+    kind: "thermal" | "rgb",
+    batchRunContext: BatchRunContext,
+    existingFileId?: string,
+  ) {
     const params = new URLSearchParams({ kind });
     if (existingFileId) {
       params.set("file_id", existingFileId);
@@ -364,6 +771,14 @@ export default function Home() {
         "Content-Type": file.type || "application/octet-stream",
         "x-file-name": file.name,
         "x-request-id": uploadRequestId,
+        "x-batch-run-id": batchRunContext.batchRunId,
+        "x-batch-file-total": String(batchRunContext.fileTotal),
+        "x-batch-file-names": batchRunContext.fileNames,
+        "x-batch-item-index": String(batchRunContext.pairIndex),
+        "x-batch-item-total": String(batchRunContext.pairTotal),
+        "x-batch-item-label": batchRunContext.pairLabel,
+        "x-batch-item-thermal-name": batchRunContext.thermalFileName,
+        "x-batch-item-rgb-name": batchRunContext.rgbFileName,
       },
       body: file,
     });
@@ -399,12 +814,12 @@ export default function Home() {
     2) upload rgb
     3) เรียก /analyze
   */
-  async function analyzeMatchedPair(pair: MatchedPair) {
-    const thermalUpload = await uploadSingleFile(pair.thermal, "thermal");
+  async function analyzeMatchedPair(pair: MatchedPair, batchRunContext: BatchRunContext) {
+    const thermalUpload = await uploadSingleFile(pair.thermal, "thermal", batchRunContext);
     setRequestId(thermalUpload.requestId);
 
     setProgressMessage("Uploading RGB image...");
-    const rgbUpload = await uploadSingleFile(pair.rgb, "rgb", thermalUpload.fileId);
+    const rgbUpload = await uploadSingleFile(pair.rgb, "rgb", batchRunContext, thermalUpload.fileId);
     setRequestId(rgbUpload.requestId);
 
     setProgressMessage("Running hotspot and equipment analysis...");
@@ -416,6 +831,14 @@ export default function Home() {
       headers: {
         "Content-Type": "application/json",
         "x-request-id": analyzeRequestId,
+        "x-batch-run-id": batchRunContext.batchRunId,
+        "x-batch-file-total": String(batchRunContext.fileTotal),
+        "x-batch-file-names": batchRunContext.fileNames,
+        "x-batch-item-index": String(batchRunContext.pairIndex),
+        "x-batch-item-total": String(batchRunContext.pairTotal),
+        "x-batch-item-label": batchRunContext.pairLabel,
+        "x-batch-item-thermal-name": batchRunContext.thermalFileName,
+        "x-batch-item-rgb-name": batchRunContext.rgbFileName,
       },
       body: JSON.stringify({ file_id: rgbUpload.fileId }),
     });
@@ -438,8 +861,7 @@ export default function Home() {
       };
     }
 
-    // [เพิ่มใหม่]
-    // โค้ดใหม่แปลงผลลัพธ์ backend ให้เป็นรูปแบบ AnalysisResult ผ่าน helper กลาง
+        // โค้ดใหม่แปลงผลลัพธ์ backend ให้เป็นรูปแบบ AnalysisResult ผ่าน helper กลาง
     return toAnalysisResult(pair, responseData, responseRequestId);
   }
 
@@ -462,15 +884,27 @@ export default function Home() {
 
     const nextFailedPairs: FailedPair[] = [];
     const nextResults: AnalysisResult[] = [];
+    const batchRunId = createRequestId();
+    const batchFileNames = selectedFiles.map((file) => file.name).join(" | ");
 
     try {
       for (const [pairIndex, pair] of matchedPairs.entries()) {
+        const batchRunContext: BatchRunContext = {
+          batchRunId,
+          fileTotal: selectedFiles.length,
+          fileNames: batchFileNames,
+          pairIndex: pairIndex + 1,
+          pairTotal: matchedPairs.length,
+          pairLabel: pair.displayName,
+          thermalFileName: pair.thermal.name,
+          rgbFileName: pair.rgb.name,
+        };
         setActivePairIndex(pairIndex + 1);
         setActivePairLabel(pair.displayName);
         setProgressMessage("Uploading thermal image...");
 
         try {
-          const result = await analyzeMatchedPair(pair);
+          const result = await analyzeMatchedPair(pair, batchRunContext);
           nextResults.push(result);
           setResults([...nextResults]);
           setSelectedPairIndex(nextResults.length - 1);
@@ -526,8 +960,7 @@ export default function Home() {
     }
   }
 
-  // [เพิ่มใหม่]
-  // ปุ่ม Previous / Next ของรูปหลัก
+    // ปุ่ม Previous / Next ของรูปหลัก
   function selectPair(nextIndex: number) {
     if (results.length === 0) {
       return;
@@ -538,15 +971,13 @@ export default function Home() {
     setSelectedDetectionIndex(0);
   }
 
-  // [เพิ่มใหม่]
-  // เลือก hotspot ที่กำลังดูอยู่
+    // เลือก hotspot ที่กำลังดูอยู่
   function selectDetection(pairIndex: number, detectionIndex: number) {
     setSelectedPairIndex(pairIndex);
     setSelectedDetectionIndex(detectionIndex);
   }
 
-  // [เพิ่มใหม่]
-  // เวลา user คลิก marker บนแผนที่ ให้ sync กลับมาที่รูปนั้น
+    // เวลา user คลิก marker บนแผนที่ ให้ sync กลับมาที่รูปนั้น
   function handleMarkerSelect(markerId: string) {
     const pairIndex = results.findIndex((result) => result.id === markerId);
 
@@ -742,141 +1173,323 @@ export default function Home() {
           </div>
 
           {selectedPair && (
-            <div className="resultGrid">
-              <div className="annotatedPanel">
-                {selectedPair.annotatedImage ? (
-                  <Image
-                    src={selectedPair.annotatedImage}
-                    alt={`Annotated hotspot result for ${selectedPair.displayName}`}
-                    width={1600}
-                    height={900}
-                    unoptimized
-                    className="annotatedImage"
-                  />
-                ) : (
-                  <div className="emptyState">Annotated image is unavailable for this pair.</div>
-                )}
+            <div className="selectedPairLayout">
+              <div className="selectedPairHeroGrid">
+                <article className="comparisonCard">
+                  <div className="comparisonCardHeader">
+                    <div className="comparisonCardCopy">
+                      <p className="comparisonCardTitle">Thermal camera image</p>
+                      <p className="comparisonCardHint">Thermal image from the camera with hotspot overlays.</p>
+                    </div>
+                  </div>
 
-                {/* เหมือนเดิม: ถ้าไม่มี absolute temperature ให้แจ้งเตือน */}
-                {selectedPair.thermalAvailable === false && (
-                  <p className="status warning">
-                    {selectedPair.thermalMode === "relative"
-                      ? `Absolute temperature unavailable: ${
-                          selectedPair.thermalError || "Relative hotspot points are shown only."
-                        }`
-                      : `Temperature extraction unavailable: ${
-                          selectedPair.thermalError || "RawThermalImage metadata not found."
-                        }`}
-                  </p>
-                )}
+                  {selectedCameraImage ? (
+                    <div className={`annotatedImageFrame ${canShowReferenceRoiUi ? "annotatedImageFrameInteractive" : ""}`}>
+                      <Image
+                        src={selectedCameraImage}
+                        alt={`Thermal camera result for ${selectedPair.displayName}`}
+                        width={1600}
+                        height={900}
+                        unoptimized
+                        className="annotatedImage"
+                      />
+                      {canShowReferenceRoiUi && (
+                        <div
+                          className={`annotatedRoiOverlay ${isApplyingReferenceRoi ? "disabled" : ""}`}
+                          onPointerDown={handleRoiPointerDown}
+                          onPointerMove={handleRoiPointerMove}
+                          onPointerUp={finishRoiPointer}
+                          onPointerCancel={handleRoiPointerCancel}
+                        >
+                          {activeReferenceRoi && (
+                            <div className="annotatedRoiBox" style={getRoiStyle(activeReferenceRoi)}>
+                              <span className="annotatedRoiLabel">Reference ROI</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="comparisonPlaceholder">Thermal camera image is unavailable for this pair.</div>
+                  )}
 
-                {/* [เพิ่มใหม่]
-                   แสดง reference temperature ถ้ามี
-                */}
-                {selectedPair.referenceTemperature !== null && (
-                  <p className="subtle">
-                    Reference temperature: {selectedPair.referenceTemperature.toFixed(1)} {DEGREE_C}
-                  </p>
-                )}
+                  <div className="comparisonCardActions">
+                    <button
+                      className="imageDownloadButton"
+                      type="button"
+                      onClick={() =>
+                        void downloadImageAsset(
+                          selectedThermalDownloadImage,
+                          buildDownloadFileName(selectedPair.thermalFileName),
+                        )
+                      }
+                      disabled={!selectedThermalDownloadImage}
+                    >
+                      Download image
+                    </button>
+                  </div>
+                </article>
+
+                <div className="selectedPairInfoStack">
+                  <article className="detailCard">
+                    <h3 className="detailTitle">
+                      {selectedPair.displayName} ({selectedPairIndex + 1}/{results.length})
+                    </h3>
+                    <p className="detailLine">Thermal: {selectedPair.thermalFileName}</p>
+                    <p className="detailLine">RGB: {selectedPair.rgbFileName}</p>
+                    <p className="detailLine">Request ID: {selectedPair.requestId}</p>
+                    <p className="detailLine">
+                      GPS:{" "}
+                      {selectedPair.latitude !== null && selectedPair.longitude !== null
+                        ? `${selectedPair.latitude.toFixed(6)}, ${selectedPair.longitude.toFixed(6)}`
+                        : "No GPS data"}
+                    </p>
+                    {selectedPair.message && <p className="detailLine">{selectedPair.message}</p>}
+                  </article>
+
+                  <article className="detailCard">
+                    <h3 className="detailTitle">Hotspots in this image</h3>
+                    {selectedPair.detections.length === 0 ? (
+                      <p className="subtle">No hotspot detected by the model.</p>
+                    ) : (
+                      <div className="hotspotList">
+                        {selectedPair.detections.map((detection, index) => (
+                          <button
+                            key={getMarkerId(selectedPairIndex, index)}
+                            type="button"
+                            className={`hotspotButton ${index === safeSelectedDetectionIndex ? "active" : ""}`}
+                            onClick={() => selectDetection(selectedPairIndex, index)}
+                          >
+                            <span className="hotspotName">Hotspot {index + 1}</span>
+                            <span className="hotspotMeta">{getHotspotSummary(detection)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+
+                  <article className="detailCard">
+                    <h3 className="detailTitle">Selected hotspot detail</h3>
+                    {selectedDetection ? (
+                      <div className="detailStack">
+                        <p className="detailLine">Equipment: {getEquipmentLabel(selectedDetection)}</p>
+                        <p className="detailLine">Temperature: {getTemperatureDetail(selectedDetection)}</p>
+                        {/* [เพิ่มใหม่]
+                           แสดงค่า reference เฉพาะ hotspot ที่กำลังเลือก
+                        */}
+                        {typeof selectedDetection.reference_temp === "number" && (
+                          <p className="detailLine">
+                            Reference{selectedPair.referenceSource === "roi" ? " (ROI)" : ""}:{" "}
+                            {selectedDetection.reference_temp.toFixed(1)} {DEGREE_C}
+                          </p>
+                        )}
+                        {/* [เพิ่มใหม่]
+                           แสดงค่า rise above reference
+                        */}
+                        {typeof selectedDetection.delta_above_reference === "number" && (
+                          <p className="detailLine">
+                            Rise above reference: {selectedDetection.delta_above_reference.toFixed(1)} {DEGREE_C}
+                          </p>
+                        )}
+                        {/* [เพิ่มใหม่]
+                           แสดงวิธี match และระยะ
+                        */}
+                        <p className="detailLine">
+                          Match: {selectedDetection.match_method ?? "unknown"}
+                          {typeof selectedDetection.match_distance === "number"
+                            ? ` (${selectedDetection.match_distance.toFixed(1)} px)`
+                            : ""}
+                        </p>
+                        {/* [เพิ่มใหม่]
+                           แสดง priority และ action */}
+                        <p className="detailLine">Priority: {selectedDetection.priority ?? "Not rated"}</p>
+                        <p className="detailLine">
+                          Action: {selectedDetection.action_required ?? "No action suggested"}
+                        </p>
+                        {/* [เพิ่มใหม่]
+                           confidence ของ equipment model */}
+                        {typeof selectedDetection.equipment_confidence === "number" && (
+                          <p className="detailLine">
+                            Equipment confidence: {selectedDetection.equipment_confidence.toFixed(2)}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="subtle">Select a hotspot from the list or from the map.</p>
+                    )}
+                  </article>
+                </div>
               </div>
+
+              <div className="comparisonGrid">
+                <article className="comparisonCard">
+                  <div className="comparisonCardHeader">
+                    <div className="comparisonCardCopy">
+                      <p className="comparisonCardTitle">RGB image</p>
+                      <p className="comparisonCardHint">Original RGB image without hotspot overlays.</p>
+                    </div>
+                  </div>
+
+                  {selectedRgbImage ? (
+                    <div className="annotatedImageFrame">
+                      <Image
+                        src={selectedRgbImage}
+                        alt={`RGB image for ${selectedPair.displayName}`}
+                        width={1600}
+                        height={900}
+                        unoptimized
+                        className="annotatedImage"
+                      />
+                    </div>
+                  ) : (
+                    <div className="comparisonPlaceholder">RGB image is unavailable for this pair.</div>
+                  )}
+
+                  <div className="comparisonCardActions">
+                    <button
+                      className="imageDownloadButton"
+                      type="button"
+                      onClick={() =>
+                        void downloadImageAsset(selectedRgbImage, buildDownloadFileName(selectedPair.rgbFileName))
+                      }
+                      disabled={!selectedRgbImage}
+                    >
+                      Download image
+                    </button>
+                  </div>
+                </article>
+
+                <article className="comparisonCard">
+                  <div className="comparisonCardHeader">
+                    <div className="comparisonCardCopy">
+                      <p className="comparisonCardTitle">
+                        {FIXED_RANGE_MIN_C}-{FIXED_RANGE_MAX_C}
+                        {DEGREE_C} range
+                      </p>
+                      <p className="comparisonCardHint">
+                        Fixed display scale for direct cross-image temperature comparison.
+                      </p>
+                    </div>
+                  </div>
+
+                  {selectedFixedRangeImage ? (
+                    <div className={`annotatedImageFrame ${canShowReferenceRoiUi ? "annotatedImageFrameInteractive" : ""}`}>
+                      <Image
+                        src={selectedFixedRangeImage}
+                        alt={`Fixed-range thermal result for ${selectedPair.displayName}`}
+                        width={1600}
+                        height={900}
+                        unoptimized
+                        className="annotatedImage"
+                      />
+                      {canShowReferenceRoiUi && (
+                        <div
+                          className={`annotatedRoiOverlay ${isApplyingReferenceRoi ? "disabled" : ""}`}
+                          onPointerDown={handleRoiPointerDown}
+                          onPointerMove={handleRoiPointerMove}
+                          onPointerUp={finishRoiPointer}
+                          onPointerCancel={handleRoiPointerCancel}
+                        >
+                          {activeReferenceRoi && (
+                            <div className="annotatedRoiBox" style={getRoiStyle(activeReferenceRoi)}>
+                              <span className="annotatedRoiLabel">Reference ROI</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="comparisonPlaceholder warning">
+                      Fixed {FIXED_RANGE_MIN_C}-{FIXED_RANGE_MAX_C}
+                      {DEGREE_C} display is unavailable for this pair because absolute temperature data could not be
+                      extracted.
+                    </div>
+                  )}
+
+                  <div className="comparisonCardActions">
+                    <button
+                      className="imageDownloadButton"
+                      type="button"
+                      onClick={() =>
+                        void downloadImageAsset(
+                          selectedFixedRangeDownloadImage,
+                          buildDownloadFileName(selectedPair.thermalFileName, "_fixed-range"),
+                        )
+                      }
+                      disabled={!selectedFixedRangeDownloadImage}
+                    >
+                      Download image
+                    </button>
+                  </div>
+                </article>
+              </div>
+
+              {/* เหมือนเดิม: ถ้าไม่มี absolute temperature ให้แจ้งเตือน */}
+              {selectedPair.thermalAvailable === false && (
+                <p className="status warning selectedPairStatus">
+                  {selectedPair.thermalMode === "relative"
+                    ? `Absolute temperature unavailable: ${
+                        selectedPair.thermalError || "Relative hotspot points are shown only."
+                      }`
+                    : `Temperature extraction unavailable: ${
+                        selectedPair.thermalError || "RawThermalImage metadata not found."
+                      }`}
+                </p>
+              )}
 
               {/* [เพิ่มใหม่]
-                 คอลัมน์รายละเอียดด้านขวา
-                 แยกเป็นข้อมูลภาพ, รายการ hotspot, และรายละเอียด hotspot ที่เลือก
+                 แสดง reference temperature ถ้ามี
               */}
-              <div className="detailColumn">
-                <article className="detailCard">
-                  <h3 className="detailTitle">
-                    {selectedPair.displayName} ({selectedPairIndex + 1}/{results.length})
-                  </h3>
-                  <p className="detailLine">Thermal: {selectedPair.thermalFileName}</p>
-                  <p className="detailLine">RGB: {selectedPair.rgbFileName}</p>
-                  <p className="detailLine">Request ID: {selectedPair.requestId}</p>
-                  <p className="detailLine">
-                    GPS:{" "}
-                    {selectedPair.latitude !== null && selectedPair.longitude !== null
-                      ? `${selectedPair.latitude.toFixed(6)}, ${selectedPair.longitude.toFixed(6)}`
-                      : "No GPS data"}
-                  </p>
-                  {selectedPair.message && <p className="detailLine">{selectedPair.message}</p>}
-                </article>
+              {selectedPair.referenceTemperature !== null && (
+                <p className="subtle selectedPairReference">
+                  Reference temperature{selectedPair.referenceSource === "roi" ? " (ROI)" : ""}:{" "}
+                  {selectedPair.referenceTemperature.toFixed(1)} {DEGREE_C}
+                </p>
+              )}
 
-                <article className="detailCard">
-                  <h3 className="detailTitle">Hotspots in this image</h3>
-                  {selectedPair.detections.length === 0 ? (
-                    <p className="subtle">No hotspot detected by the model.</p>
-                  ) : (
-                    <div className="hotspotList">
-                      {selectedPair.detections.map((detection, index) => (
-                        <button
-                          key={getMarkerId(selectedPairIndex, index)}
-                          type="button"
-                          className={`hotspotButton ${index === safeSelectedDetectionIndex ? "active" : ""}`}
-                          onClick={() => selectDetection(selectedPairIndex, index)}
-                        >
-                          <span className="hotspotName">Hotspot {index + 1}</span>
-                          <span className="hotspotMeta">{getHotspotSummary(detection)}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </article>
-
-                <article className="detailCard">
-                  <h3 className="detailTitle">Selected hotspot detail</h3>
-                  {selectedDetection ? (
-                    <div className="detailStack">
-                      <p className="detailLine">Equipment: {getEquipmentLabel(selectedDetection)}</p>
-                      <p className="detailLine">Temperature: {getTemperatureDetail(selectedDetection)}</p>
-
-                      {/* [เพิ่มใหม่]
-                         แสดงค่า reference เฉพาะ hotspot ที่กำลังเลือก
-                      */}
-                      {typeof selectedDetection.reference_temp === "number" && (
-                        <p className="detailLine">
-                          Reference: {selectedDetection.reference_temp.toFixed(1)} {DEGREE_C}
-                        </p>
-                      )}
-
-                      {/* [เพิ่มใหม่]
-                         แสดงค่า rise above reference
-                      */}
-                      {typeof selectedDetection.delta_above_reference === "number" && (
-                        <p className="detailLine">
-                          Rise above reference: {selectedDetection.delta_above_reference.toFixed(1)} {DEGREE_C}
-                        </p>
-                      )}
-
-                      {/* [เพิ่มใหม่]
-                         แสดงวิธี match และระยะ
-                      */}
-                      <p className="detailLine">
-                        Match: {selectedDetection.match_method ?? "unknown"}
-                        {typeof selectedDetection.match_distance === "number"
-                          ? ` (${selectedDetection.match_distance.toFixed(1)} px)`
-                          : ""}
+              {/* [เพิ่มใหม่ล่าสุด]
+                 แถบเครื่องมือ ROI สำหรับวาดกรอบ, ส่งไปคำนวณ, หรือรีเซ็ตกลับเป็น Auto
+              */}
+              {canShowReferenceRoiUi && (
+                <div className="roiToolbar">
+                  <div className="roiToolbarHeader">
+                    <div className="roiToolbarCopy">
+                      <p className="roiToolbarTitle">Reference ROI</p>
+                      <p className="roiToolbarHint">
+                        {activeReferenceRoi
+                          ? "Drag a new box on either image if you want to replace the current selection, then click Apply ROI."
+                          : "Draw a box on either thermal image, then click Apply ROI."}
                       </p>
-
-                      {/* [เพิ่มใหม่]
-                         แสดง priority และ action */}
-                      <p className="detailLine">Priority: {selectedDetection.priority ?? "Not rated"}</p>
-                      <p className="detailLine">
-                        Action: {selectedDetection.action_required ?? "No action suggested"}
-                      </p>
-
-                      {/* [เพิ่มใหม่]
-                         confidence ของ equipment model */}
-                      {typeof selectedDetection.equipment_confidence === "number" && (
-                        <p className="detailLine">
-                          Equipment confidence: {selectedDetection.equipment_confidence.toFixed(2)}
+                      {!canApplyReferenceRoiBackend && (
+                        <p className="roiToolbarWarning">
+                          ROI recalculation is not ready because the backend is still running an older version. Restart
+                          the backend, then analyze again.
                         </p>
                       )}
                     </div>
-                  ) : (
-                    <p className="subtle">Select a hotspot from the list or from the map.</p>
-                  )}
-                </article>
-              </div>
+                    <div className="roiActionRow">
+                      <button
+                        className="roiButton"
+                        type="button"
+                        onClick={() => {
+                          void applyReferenceRoi();
+                        }}
+                        disabled={!canApplyReferenceRoi}
+                      >
+                        {isApplyingReferenceRoi ? "Applying ROI..." : "Apply ROI"}
+                      </button>
+                      <button
+                        className="roiButton secondary"
+                        type="button"
+                        onClick={resetReferenceRoi}
+                        disabled={!canResetReferenceRoi}
+                      >
+                        Reset to Auto
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </section>

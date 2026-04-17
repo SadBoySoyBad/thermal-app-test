@@ -6,7 +6,7 @@
 # ถ้าเริ่มอ่านครั้งแรก แนะนำลำดับนี้:
 # 1) อ่านค่าคงที่และ config ด้านบน
 # 2) อ่านฟังก์ชัน `_analyze_saved_pair()` (แกนหลักของ pipeline)
-# 3) อ่าน endpoint `/upload-file`, `/analyze`, `/progress`
+# 3) อ่าน endpoint `/upload-file`, `/analyze`, `/reference-roi`, `/progress`
 #
 # สรุปความต่างจากโค้ดเก่า:
 # 1) จากเดิมรองรับภาพ thermal ไฟล์เดียว
@@ -43,21 +43,24 @@
 # 9) จากเดิมยังไม่คุม resource ละเอียด
 #    -> ใหม่เพิ่ม gc.collect(), ลบ model หลังใช้, คุม torch threads
 #
+# 10) เวอร์ชันล่าสุดเพิ่ม fixed display range และ /reference-roi
+#     -> รองรับการดูภาพด้วยสเกลสีคงที่ และให้ผู้ใช้เลือก ROI เพื่อคำนวณค่าอ้างอิงใหม่ได้
+#
 # ============================================================
 
 from pathlib import Path
-# [เพิ่ม Any]
+# [ส่วน import เพิ่มเติม]
 # ใช้รองรับ dict / function ที่รับค่าหลายชนิด
 # จากเดิมมีแค่ Literal, Optional, Tuple
 from typing import Any, Literal, Optional, Tuple
 
-# [เพิ่ม gc]
+# [ส่วน import สำหรับจัดการหน่วยความจำ]
 # ใช้ช่วยเก็บกวาดหน่วยความจำหลังโหลดโมเดลหรือประมวลผลเสร็จ
 import gc
 
 import io
 
-# [เพิ่ม logging]
+# [ส่วน import สำหรับระบบ log]
 # ใช้ทำ log ฝั่ง backend เพื่อ debug ได้ง่ายขึ้น โดยเฉพาะบน server จริง
 import logging
 
@@ -66,7 +69,7 @@ import re
 import shutil
 import subprocess
 
-# [เพิ่ม time]
+# [ส่วน import สำหรับจับเวลา]
 # ใช้วัดเวลา request และ progress แต่ละขั้น
 import time
 
@@ -75,23 +78,23 @@ import uuid
 import exifread
 import numpy as np
 
-# [แก้ import FastAPI]
+# [ส่วน import ของ FastAPI ที่ปรับให้รองรับ request object]
 # ใช้ Request เป็นหลัก เพราะโค้ดอ่าน json/stream และ header/query จาก request ตรง ๆ
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-# [เพิ่ม JSONResponse]
+# [ส่วน import สำหรับส่ง JSON error]
 # ใช้คืน error response แบบกำหนด status code ได้ชัดเจน
 from fastapi.responses import JSONResponse
 
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw
 
-# [เพิ่ม ClientDisconnect]
+# [ส่วน import สำหรับจับกรณี client หลุด]
 # ใช้จับกรณี client หลุดระหว่างอัปโหลดไฟล์
 from starlette.requests import ClientDisconnect
 
-# [เพิ่ม torch]
+# [ส่วน import ของ PyTorch สำหรับคุม resource]
 # ใช้คุมจำนวน threads ของ PyTorch และช่วยเรื่อง resource
 import torch
 
@@ -99,22 +102,23 @@ from ultralytics import YOLO
 
 
 # ------------------------------
-# path และค่าคงที่พื้นฐานของโปรเจกต์
+# ส่วนที่ 1: path หลักและค่าคงที่พื้นฐานของโปรเจกต์
+# ใช้กำหนดโฟลเดอร์หลัก ชื่อไฟล์โมเดล และค่าคงที่ที่หลายฟังก์ชันจะเรียกใช้ร่วมกัน
 # ------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 
-# [แก้จากเดิม]
+# [ส่วน path ของโมเดล]
 # เดิมมี model เดียวคือ best.pt สำหรับ hotspot
-# ใหม่แยก default model path สำหรับ hotspot และ equipment
+# เวอร์ชันนี้แยก default model path สำหรับ hotspot และ equipment
 DEFAULT_HOTSPOT_MODEL_PATH = BASE_DIR / "model" / "best.pt"
 DEFAULT_EQUIPMENT_MODEL_PATH = BASE_DIR / "model" / "equipment.pt"
 
-# [เพิ่มใหม่]
+# [ส่วนรายการนามสกุลไฟล์ที่อนุญาต]
 # จำกัดนามสกุลไฟล์ภาพที่ระบบยอมรับ
 ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
 
-# [เพิ่มใหม่]
+# [ส่วนแปลงรหัสคลาสเป็นชื่ออุปกรณ์]
 # map class id ของโมเดล equipment -> ชื่ออุปกรณ์
 # ใช้ตอนส่งผลลัพธ์กลับ frontend ให้อ่านง่ายขึ้น
 EQUIPMENT_LABELS = {
@@ -131,7 +135,7 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 
 # ------------------------------
-# [เพิ่มใหม่ทั้งหมด]
+# [ส่วนระบบ log]
 # ระบบ logging ของ backend
 # ------------------------------
 logging.basicConfig(
@@ -141,7 +145,7 @@ logging.basicConfig(
 logger = logging.getLogger("thermal_app")
 
 # ------------------------------
-# [เพิ่มใหม่ทั้งหมด]
+# [ส่วนติดตามสถานะงาน]
 # ใช้เก็บ progress ของแต่ละ request
 # frontend สามารถ poll มาดูสถานะได้จาก /progress/{request_id}
 # ------------------------------
@@ -155,7 +159,7 @@ MAX_PROGRESS_ENTRIES = 256
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ฟังก์ชันดูแลหน่วยความจำของ progress]
 # ลบ progress ที่เก่าเกินไป หรือเกินจำนวนสูงสุด
 # กัน memory โตเรื่อย ๆ
 # ------------------------------
@@ -181,7 +185,7 @@ def _prune_request_progress(now: float) -> None:
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ฟังก์ชันอัปเดต progress]
 # ฟังก์ชันกลางสำหรับอัปเดต progress ของ request
 # ใช้เก็บ step ปัจจุบัน, รายละเอียดเสริม, เวลาเริ่ม, เวลาอัปเดต
 # ------------------------------
@@ -209,7 +213,7 @@ def _set_request_progress(request_id: str, step: str, **details: Any) -> None:
 
 
 # ------------------------------
-# [เพิ่มใหม่ทั้งหมด]
+# [middleware ติดตามคำขอ]
 # middleware นี้ทำงานกับทุก request
 # หน้าที่:
 # 1) สร้าง/อ่าน request_id
@@ -290,7 +294,7 @@ async def log_request_lifecycle(request: Request, call_next):
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยอ่านค่า env แบบ float]
 # helper อ่าน env แล้วแปลงเป็น float แบบปลอดภัย
 # ถ้าอ่านไม่ได้ให้ fallback เป็น default
 # ------------------------------
@@ -309,7 +313,7 @@ def _env_float(name: str, default_value: float) -> float:
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยอ่านค่า env แบบ int]
 # helper อ่าน env แล้วแปลงเป็น int แบบปลอดภัย
 # ------------------------------
 def _env_int(name: str, default_value: int) -> int:
@@ -325,8 +329,98 @@ def _env_int(name: str, default_value: int) -> int:
         return default_value
 
 
+def _parse_positive_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+
+    raw_value = value.strip()
+    if not raw_value:
+        return None
+
+    try:
+        parsed_value = int(raw_value)
+    except ValueError:
+        return None
+
+    return parsed_value if parsed_value > 0 else None
+
+
+def _get_batch_request_context(request: Request) -> dict[str, Any]:
+    return {
+        "batch_run_id": (request.headers.get("x-batch-run-id") or "").strip(),
+        "file_total": _parse_positive_int(request.headers.get("x-batch-file-total")),
+        "file_names": (request.headers.get("x-batch-file-names") or "").strip(),
+        "item_index": _parse_positive_int(request.headers.get("x-batch-item-index")),
+        "item_total": _parse_positive_int(request.headers.get("x-batch-item-total")),
+        "item_label": (request.headers.get("x-batch-item-label") or "").strip(),
+        "thermal_file_name": (request.headers.get("x-batch-item-thermal-name") or "").strip(),
+        "rgb_file_name": (request.headers.get("x-batch-item-rgb-name") or "").strip(),
+    }
+
+
+def _log_batch_event(request_id: str, event: str, batch_context: dict[str, Any], **details: Any) -> None:
+    detail_parts: list[str] = []
+
+    file_total = batch_context.get("file_total")
+    if file_total is not None:
+        detail_parts.append(f"files={file_total}")
+
+    file_names = batch_context.get("file_names")
+    if file_names:
+        detail_parts.append(f"file_names={file_names}")
+
+    item_index = batch_context.get("item_index")
+    item_total = batch_context.get("item_total")
+    if item_index is not None and item_total is not None:
+        detail_parts.append(f"pair={item_index}/{item_total}")
+
+    item_label = batch_context.get("item_label")
+    if item_label:
+        detail_parts.append(f"label={item_label}")
+
+    thermal_file_name = batch_context.get("thermal_file_name")
+    if thermal_file_name:
+        detail_parts.append(f"thermal_file={thermal_file_name}")
+
+    rgb_file_name = batch_context.get("rgb_file_name")
+    if rgb_file_name:
+        detail_parts.append(f"rgb_file={rgb_file_name}")
+
+    for key, value in details.items():
+        detail_parts.append(f"{key}={value}")
+
+    if detail_parts:
+        logger.info("[%s] %s %s", request_id, event, " ".join(detail_parts))
+    else:
+        logger.info("[%s] %s", request_id, event)
+
+
 # ------------------------------
-# [เพิ่มใหม่]
+# [เพิ่มในเวอร์ชันล่าสุด]
+# ส่วนนี้กำหนด "ช่วงอุณหภูมิสำหรับการแสดงผล"
+# เพื่อให้ภาพ thermal หลายภาพใช้สเกลสีเดียวกันและเทียบกันได้ตรงขึ้น
+# หมายเหตุ: ใช้เพื่อการแสดงผลเท่านั้น ไม่ได้เปลี่ยนค่าที่ใช้วิเคราะห์จริง
+# ------------------------------
+DISPLAY_TEMP_MIN_C = _env_float("DISPLAY_TEMP_MIN_C", 25.0)
+DISPLAY_TEMP_MAX_C = _env_float("DISPLAY_TEMP_MAX_C", 40.0)
+
+THERMAL_DISPLAY_COLOR_STOPS = np.array(
+    [
+        [0.0, 6, 5, 24],
+        [0.16, 47, 15, 104],
+        [0.32, 101, 21, 110],
+        [0.48, 159, 42, 99],
+        [0.64, 212, 72, 66],
+        [0.8, 245, 125, 21],
+        [0.92, 250, 187, 55],
+        [1.0, 252, 255, 164],
+    ],
+    dtype=np.float32,
+)
+
+
+# ------------------------------
+# [ตัวช่วยหา path ของโมเดล]
 # resolve path ของ model จาก env หรือ default path
 # รองรับทั้ง absolute path และ relative path
 # ------------------------------
@@ -344,8 +438,8 @@ def _resolve_model_path(raw_path: str, default_path: Path) -> Path:
 
 
 # ------------------------------
-# โหลดรายการ CORS origins
-# โครงหลักยังเหมือนโค้ดเก่า
+# ส่วนที่ 2: การตั้งค่า CORS
+# ใช้กำหนดว่า frontend จาก origin ไหนเรียก API นี้ได้บ้าง
 # ------------------------------
 def _load_cors_origins() -> list[str]:
     """
@@ -374,9 +468,8 @@ app.add_middleware(
 
 
 # ------------------------------
-# [ขยายจากเดิม]
-# config ต่าง ๆ ของระบบ อ่านจาก env ได้
-# ทำให้ปรับ threshold / imgsz / alignment ได้โดยไม่ต้องแก้ source code
+# ส่วนที่ 3: config หลักของระบบจาก environment variables
+# ใช้ปรับพฤติกรรมระบบ เช่น threshold, ขนาดภาพ, การ align thermal กับ RGB โดยไม่ต้องแก้โค้ดตรง ๆ
 # ------------------------------
 YOLO_DEVICE = os.getenv("YOLO_DEVICE", "cpu")
 HOTSPOT_CONFIDENCE = _env_float("HOTSPOT_CONFIDENCE", 0.2)
@@ -384,34 +477,34 @@ HOTSPOT_IOU = _env_float("HOTSPOT_IOU", 0.5)
 EQUIPMENT_CONFIDENCE = _env_float("EQUIPMENT_CONFIDENCE", 0.2)
 EQUIPMENT_IOU = _env_float("EQUIPMENT_IOU", 0.5)
 
-# [เพิ่มใหม่]
+# [ค่าเลื่อนตำแหน่ง thermal]
 # ใช้ปรับตำแหน่ง thermal overlay บน RGB
 THERMAL_CENTER_SHIFT_X = _env_int("THERMAL_CENTER_SHIFT_X", -10)
 THERMAL_CENTER_SHIFT_Y = _env_int("THERMAL_CENTER_SHIFT_Y", -1)
 
-# [เพิ่มใหม่]
+# [ค่าขยายกรอบอุปกรณ์]
 # ใช้ขยาย bbox ของ equipment เพื่อช่วยการ match
 EQUIPMENT_BBOX_DILATION = _env_int("EQUIPMENT_BBOX_DILATION", 12)
 
-# [เพิ่มใหม่]
+# [ค่าระยะสูงสุดสำหรับการจับคู่]
 # ระยะ threshold สูงสุดสำหรับ match แบบ nearest
 MATCH_DISTANCE_THRESHOLD = _env_float("MATCH_DISTANCE_THRESHOLD", 40.0)
 
-# [เพิ่มใหม่]
+# [ค่าเกณฑ์สำหรับหา reference temperature]
 # ค่าสูงสุดของ pixel ที่จะนับเป็น reference temperature
 REFERENCE_TEMP_MAX_C = _env_float("REFERENCE_TEMP_MAX_C", 28.0)
 
-# [เพิ่มใหม่]
+# [ค่าการเตรียมภาพ RGB ก่อนตรวจจับ]
 # จำกัดขนาดรูป RGB ตอน detect และ margin ตอน crop
 RGB_DETECTION_MAX_DIM = _env_int("RGB_DETECTION_MAX_DIM", 1600)
 RGB_DETECTION_CROP_MARGIN = _env_int("RGB_DETECTION_CROP_MARGIN", 120)
 
-# [เพิ่มใหม่]
+# [ค่าขนาดภาพสำหรับโมเดล]
 # imgsz แยกของ hotspot / equipment model
 HOTSPOT_IMGSZ = _env_int("HOTSPOT_IMGSZ", 640)
 EQUIPMENT_IMGSZ = _env_int("EQUIPMENT_IMGSZ", 640)
 
-# [เพิ่มใหม่]
+# [ค่าจำนวน threads ของ PyTorch]
 # จำนวน threads ของ PyTorch
 TORCH_NUM_THREADS = max(1, _env_int("TORCH_NUM_THREADS", 1))
 TORCH_INTEROP_THREADS = max(1, _env_int("TORCH_INTEROP_THREADS", 1))
@@ -421,7 +514,7 @@ EQUIPMENT_MODEL_PATH = _resolve_model_path(os.getenv("EQUIPMENT_MODEL_PATH", "")
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตั้งค่าการใช้ทรัพยากรของ PyTorch]
 # จำกัดจำนวน threads ของ PyTorch
 # ช่วยคุม resource บนเครื่องที่มีทรัพยากรจำกัด
 # ------------------------------
@@ -434,7 +527,7 @@ if hasattr(torch, "set_num_interop_threads"):
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ฟังก์ชันโหลดโมเดล]
 # โหลด model จาก path
 # required=True  -> ถ้าไม่เจอ model ให้ error
 # required=False -> ถ้าไม่เจอ model ให้คืน None
@@ -925,7 +1018,7 @@ def _safe_bbox(x1: int, y1: int, x2: int, y2: int, img_w: int, img_h: int):
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยจัดรูปแบบนามสกุลไฟล์]
 # normalize นามสกุลไฟล์ upload ให้ปลอดภัย
 # ถ้าไม่ใช่นามสกุลที่อนุญาต จะ fallback เป็น .jpg
 # ------------------------------
@@ -941,7 +1034,7 @@ def _normalize_upload_suffix(filename: str) -> str:
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยบันทึกไฟล์อัปโหลด]
 # บันทึก bytes เป็นไฟล์จริงใน uploads
 # ตั้งชื่อไฟล์เป็น {file_id}_{label}.{ext}
 # เช่น abc123_thermal.jpg, abc123_rgb.jpg
@@ -961,7 +1054,7 @@ def _save_upload_bytes(filename: str, file_id: str, label: str, payload: bytes) 
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยค้นหาไฟล์อัปโหลดเดิม]
 # ค้นหาไฟล์ที่อัปโหลดไว้แล้วจาก file_id + label
 # ใช้กับ flow /upload-file + /analyze
 # ------------------------------
@@ -978,7 +1071,7 @@ def _find_uploaded_file(file_id: str, label: str) -> Optional[Tuple[str, Path]]:
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยส่ง error กลับ frontend]
 # ฟังก์ชันกลางสำหรับคืน JSON error มาตรฐาน
 # ------------------------------
 def _json_error(message: str, request_id: str, status_code: int, **extra: Any) -> JSONResponse:
@@ -998,7 +1091,7 @@ def _json_error(message: str, request_id: str, status_code: int, **extra: Any) -
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ฟังก์ชันรัน YOLO หนึ่งครั้ง]
 # รัน YOLO บนภาพ 1 ภาพ แล้วคืนผลลัพธ์เป็น list ของ detection dict
 # ใช้ได้ทั้ง hotspot model และ equipment model
 # ------------------------------
@@ -1041,7 +1134,7 @@ def _run_yolo_detection(model: YOLO, image_path: Path, conf: float, iou: float, 
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ฟังก์ชันรัน YOLO แบบโหลดแล้วปล่อยทันที]
 # เวอร์ชันที่รับ model path แล้วโหลด/รัน/ลบ model ภายใน function
 # ช่วยลด memory usage เพราะลบ model หลังใช้เสร็จ
 # ------------------------------
@@ -1070,7 +1163,7 @@ def _run_yolo_detection_from_path(
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยคำนวณตำแหน่ง thermal บน RGB]
 # คำนวณว่า thermal image ทั้งภาพ ควรถูก overlay อยู่ตรงไหนใน RGB
 # โดยอาศัยฟังก์ชัน project bbox จาก thermal -> RGB
 # ------------------------------
@@ -1094,7 +1187,7 @@ def _thermal_overlay_bbox_on_rgb(
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยเตรียมภาพ RGB ก่อน detect]
 # crop ภาพ RGB เฉพาะบริเวณที่เกี่ยวข้อง แล้ว resize ถ้าภาพใหญ่เกิน
 # จุดประสงค์:
 # - ลดพื้นที่ detection
@@ -1149,7 +1242,7 @@ def _prepare_cropped_resized_inference_image(
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วย align thermal กับ RGB]
 # คำนวณ offset ของ thermal เมื่อวางไว้กลางภาพ RGB
 # และบวก shift เพิ่มจาก env เพื่อ fine-tune alignment
 # ------------------------------
@@ -1169,7 +1262,7 @@ def _centered_thermal_offset(
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยแปลงจุด thermal ไป RGB]
 # project จุดจาก thermal -> RGB
 # ใช้ตอนเอา hotspot center ไป match กับ equipment
 # ------------------------------
@@ -1194,7 +1287,7 @@ def _project_thermal_point_to_rgb(
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยแปลงกรอบ thermal ไป RGB]
 # project bbox จาก thermal -> RGB
 # ------------------------------
 def _project_thermal_bbox_to_rgb(
@@ -1228,7 +1321,7 @@ def _project_thermal_bbox_to_rgb(
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยขยายกรอบ bbox]
 # ขยาย bbox ออกทุกด้านตาม dilation ที่กำหนด
 # ใช้ช่วยการ match hotspot กับ equipment
 # ------------------------------
@@ -1253,7 +1346,7 @@ def _dilate_bbox(
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยตรวจว่าจุดอยู่ในกรอบหรือไม่]
 # เช็คว่าจุดอยู่ใน bbox หรือไม่
 # ------------------------------
 def _bbox_contains_point(bbox: Tuple[int, int, int, int], point_x: int, point_y: int) -> bool:
@@ -1264,7 +1357,7 @@ def _bbox_contains_point(bbox: Tuple[int, int, int, int], point_x: int, point_y:
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยคำนวณระยะจากจุดถึงกรอบ]
 # คำนวณระยะจากจุดไปยัง bbox
 # ถ้าจุดอยู่ใน bbox ระยะจะเป็น 0
 # ------------------------------
@@ -1279,7 +1372,7 @@ def _distance_to_bbox(bbox: Tuple[int, int, int, int], point_x: int, point_y: in
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยวาดหมายเลข hotspot]
 # วาดเลข hotspot ลงบนกรอบในภาพ thermal
 # ------------------------------
 def _draw_hotspot_index_label(
@@ -1322,7 +1415,7 @@ def _draw_hotspot_index_label(
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วยแปลง class id เป็นชื่ออุปกรณ์]
 # แปลง class id -> ชื่ออุปกรณ์
 # ------------------------------
 def _equipment_label_for_class(class_id: int) -> str:
@@ -1333,7 +1426,7 @@ def _equipment_label_for_class(class_id: int) -> str:
 
 
 # ------------------------------
-# [เพิ่มใหม่ทั้งหมด]
+# [ฟังก์ชันจับคู่ hotspot กับอุปกรณ์]
 # ฟังก์ชัน match hotspot กับ equipment
 #
 # หลักการ:
@@ -1410,9 +1503,9 @@ def _match_equipment(
 
 
 # ------------------------------
-# [เพิ่มใหม่]
-# คำนวณ reference temperature ของทั้งภาพ
-# โดยใช้ pixel ที่ <= REFERENCE_TEMP_MAX_C
+# [ส่วนคำนวณค่าอ้างอิง]
+# ฟังก์ชันนี้ใช้หาค่าอุณหภูมิอ้างอิงของทั้งภาพ
+# แล้วใช้ค่านั้นเป็นฐานในการบอกว่าจุดร้อนสูงกว่าพื้นหลังเท่าไร
 # ------------------------------
 def _compute_reference_temperature(thermal_matrix: np.ndarray) -> Optional[float]:
     """
@@ -1429,7 +1522,283 @@ def _compute_reference_temperature(thermal_matrix: np.ndarray) -> Optional[float
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [เพิ่มในเวอร์ชันล่าสุด]
+# กลุ่ม helper ด้านล่างนี้เพิ่มเข้ามาเพื่อรองรับการเลือก ROI จากหน้าเว็บ
+# หน้าที่หลักคือ:
+# 1) แปลงกรอบที่ผู้ใช้เลือกบนภาพ -> พิกัดใน thermal matrix
+# 2) คำนวณสถิติในกรอบที่เลือก
+# 3) คำนวณ reference temperature ใหม่จาก ROI
+# 4) recalculation ค่าของ hotspot เดิมโดยไม่ต้องรันโมเดลใหม่
+# ------------------------------
+def _image_bbox_to_matrix_bounds(
+    image_box: Tuple[int, int, int, int],
+    matrix_width: int,
+    matrix_height: int,
+    image_width: int,
+    image_height: int,
+) -> Tuple[int, int, int, int]:
+    """
+    แปลงกรอบในพิกัดภาพต้นฉบับ -> พิกัด matrix ที่ใช้วิเคราะห์จริง
+    """
+    x1 = int(np.floor(image_box[0] * matrix_width / image_width))
+    x2 = int(np.ceil(image_box[2] * matrix_width / image_width))
+    y1 = int(np.floor(image_box[1] * matrix_height / image_height))
+    y2 = int(np.ceil(image_box[3] * matrix_height / image_height))
+
+    x1 = max(0, min(x1, matrix_width - 1))
+    y1 = max(0, min(y1, matrix_height - 1))
+    x2 = max(x1 + 1, min(x2, matrix_width))
+    y2 = max(y1 + 1, min(y2, matrix_height))
+    return x1, y1, x2, y2
+
+
+def _extract_region_statistics(
+    thermal_analysis_matrix: np.ndarray,
+    image_box: Tuple[int, int, int, int],
+    image_width: int,
+    image_height: int,
+) -> Optional[dict[str, Any]]:
+    """
+    คำนวณ max/min/avg และตำแหน่งจุด max/min จากกรอบที่อ้างอิงพิกัดภาพ thermal
+    """
+    matrix_height, matrix_width = thermal_analysis_matrix.shape
+    matrix_x1, matrix_y1, matrix_x2, matrix_y2 = _image_bbox_to_matrix_bounds(
+        image_box,
+        matrix_width,
+        matrix_height,
+        image_width,
+        image_height,
+    )
+
+    thermal_region = thermal_analysis_matrix[matrix_y1:matrix_y2, matrix_x1:matrix_x2]
+    finite_region = thermal_region[np.isfinite(thermal_region)]
+    if finite_region.size == 0:
+        return None
+
+    max_value = float(np.nanmax(thermal_region))
+    min_value = float(np.nanmin(thermal_region))
+    avg_value = float(np.nanmean(thermal_region))
+
+    max_position = np.unravel_index(int(np.nanargmax(thermal_region)), thermal_region.shape)
+    min_position = np.unravel_index(int(np.nanargmin(thermal_region)), thermal_region.shape)
+
+    max_point_x = int((matrix_x1 + max_position[1]) * image_width / matrix_width)
+    max_point_y = int((matrix_y1 + max_position[0]) * image_height / matrix_height)
+    min_point_x = int((matrix_x1 + min_position[1]) * image_width / matrix_width)
+    min_point_y = int((matrix_y1 + min_position[0]) * image_height / matrix_height)
+
+    return {
+        "max_value": max_value,
+        "min_value": min_value,
+        "avg_value": avg_value,
+        "max_point": [max_point_x, max_point_y],
+        "min_point": [min_point_x, min_point_y],
+    }
+
+
+def _compute_reference_temperature_from_roi(
+    thermal_analysis_matrix: np.ndarray,
+    roi_box: Tuple[int, int, int, int],
+    image_width: int,
+    image_height: int,
+) -> Optional[float]:
+    """
+    คำนวณ reference temperature จาก ROI ที่ผู้ใช้ลากเอง
+    ใช้ค่าเฉลี่ยของ finite pixels ในกรอบโดยไม่กรอง threshold แบบทั้งภาพ
+    """
+    matrix_height, matrix_width = thermal_analysis_matrix.shape
+    matrix_x1, matrix_y1, matrix_x2, matrix_y2 = _image_bbox_to_matrix_bounds(
+        roi_box,
+        matrix_width,
+        matrix_height,
+        image_width,
+        image_height,
+    )
+    roi_region = thermal_analysis_matrix[matrix_y1:matrix_y2, matrix_x1:matrix_x2]
+    finite_pixels = roi_region[np.isfinite(roi_region)]
+    if finite_pixels.size == 0:
+        return None
+    return float(finite_pixels.mean())
+
+
+def _render_fixed_range_thermal_image(
+    thermal_matrix: Optional[np.ndarray],
+    image_width: int,
+    image_height: int,
+) -> Optional[Image.Image]:
+    """
+    render thermal matrix ให้เป็นภาพสีด้วยช่วงอุณหภูมิคงที่
+    ใช้เฉพาะสำหรับการแสดงผลเพื่อให้เทียบหลายภาพได้ตรงกัน
+    """
+    if thermal_matrix is None:
+        return None
+
+    finite_mask = np.isfinite(thermal_matrix)
+    if not np.any(finite_mask):
+        return None
+
+    display_range = DISPLAY_TEMP_MAX_C - DISPLAY_TEMP_MIN_C
+    if display_range <= 0:
+        return None
+
+    normalized_matrix = np.clip((thermal_matrix - DISPLAY_TEMP_MIN_C) / display_range, 0.0, 1.0).astype(np.float32)
+    rgb_matrix = np.zeros((*thermal_matrix.shape, 3), dtype=np.uint8)
+
+    stop_positions = THERMAL_DISPLAY_COLOR_STOPS[:, 0]
+    stop_red = THERMAL_DISPLAY_COLOR_STOPS[:, 1]
+    stop_green = THERMAL_DISPLAY_COLOR_STOPS[:, 2]
+    stop_blue = THERMAL_DISPLAY_COLOR_STOPS[:, 3]
+
+    flat_values = normalized_matrix[finite_mask]
+    interpolated_colors = np.stack(
+        [
+            np.interp(flat_values, stop_positions, stop_red),
+            np.interp(flat_values, stop_positions, stop_green),
+            np.interp(flat_values, stop_positions, stop_blue),
+        ],
+        axis=-1,
+    ).astype(np.uint8)
+    rgb_matrix[finite_mask] = interpolated_colors
+
+    rendered_image = Image.fromarray(rgb_matrix, mode="RGB")
+    if rendered_image.size != (image_width, image_height):
+        rendered_image = rendered_image.resize((image_width, image_height), resample=Image.Resampling.BILINEAR)
+    return rendered_image
+
+
+def _parse_normalized_roi(payload: Any) -> dict[str, float]:
+    """
+    รับ ROI แบบ normalized 0..1 จาก frontend และตรวจความถูกต้อง
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("ROI payload must be an object.")
+
+    normalized_roi: dict[str, float] = {}
+    for field_name in ("x", "y", "width", "height"):
+        raw_value = payload.get(field_name)
+        if not isinstance(raw_value, (int, float)):
+            raise ValueError(f"ROI field '{field_name}' must be a number.")
+        numeric_value = float(raw_value)
+        if not np.isfinite(numeric_value):
+            raise ValueError(f"ROI field '{field_name}' must be finite.")
+        normalized_roi[field_name] = numeric_value
+
+    if normalized_roi["width"] <= 0 or normalized_roi["height"] <= 0:
+        raise ValueError("ROI width and height must be greater than zero.")
+
+    if normalized_roi["x"] < 0 or normalized_roi["y"] < 0:
+        raise ValueError("ROI must stay inside the image bounds.")
+
+    if normalized_roi["x"] >= 1 or normalized_roi["y"] >= 1:
+        raise ValueError("ROI must start inside the image bounds.")
+
+    if normalized_roi["x"] + normalized_roi["width"] > 1 or normalized_roi["y"] + normalized_roi["height"] > 1:
+        raise ValueError("ROI must stay inside the image bounds.")
+
+    return normalized_roi
+
+
+def _normalized_roi_to_image_box(
+    normalized_roi: dict[str, float],
+    image_width: int,
+    image_height: int,
+) -> Tuple[int, int, int, int]:
+    """
+    แปลง normalized ROI -> bbox ในพิกัดภาพ thermal จริง
+    """
+    x1 = int(np.floor(normalized_roi["x"] * image_width))
+    y1 = int(np.floor(normalized_roi["y"] * image_height))
+    x2 = int(np.ceil((normalized_roi["x"] + normalized_roi["width"]) * image_width))
+    y2 = int(np.ceil((normalized_roi["y"] + normalized_roi["height"]) * image_height))
+    return _safe_bbox(x1, y1, x2, y2, image_width, image_height)
+
+
+def _coerce_detection_thermal_bbox(
+    raw_bbox: Any,
+    image_width: int,
+    image_height: int,
+) -> Tuple[int, int, int, int]:
+    """
+    อ่าน thermal_bbox ของ detection ที่ frontend ส่งกลับมา และหนีบให้อยู่ในภาพ
+    """
+    if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+        raise ValueError("Each detection requires a thermal_bbox with four numbers.")
+
+    coordinates: list[int] = []
+    for coordinate in raw_bbox:
+        if not isinstance(coordinate, (int, float)):
+            raise ValueError("thermal_bbox values must be numbers.")
+        numeric_value = float(coordinate)
+        if not np.isfinite(numeric_value):
+            raise ValueError("thermal_bbox values must be finite.")
+        coordinates.append(int(round(numeric_value)))
+
+    return _safe_bbox(
+        coordinates[0],
+        coordinates[1],
+        coordinates[2],
+        coordinates[3],
+        image_width,
+        image_height,
+    )
+
+
+def _recalculate_detections_for_reference_roi(
+    detections: list[dict[str, Any]],
+    thermal_analysis_matrix: np.ndarray,
+    thermal_image_width: int,
+    thermal_image_height: int,
+    reference_temperature: float,
+) -> list[dict[str, Any]]:
+    """
+    ใช้ hotspot เดิมจาก thermal_bbox แล้วคำนวณ reference/priority/action ใหม่
+    โดยไม่ rerun model
+    """
+    recalculated_detections: list[dict[str, Any]] = []
+
+    for detection in detections:
+        thermal_box = _coerce_detection_thermal_bbox(
+            detection.get("thermal_bbox"),
+            thermal_image_width,
+            thermal_image_height,
+        )
+        next_detection = dict(detection)
+        next_detection["thermal_bbox"] = list(thermal_box)
+        next_detection["reference_temp"] = reference_temperature
+        next_detection["delta_above_reference"] = None
+        next_detection["priority"] = None
+        next_detection["action_required"] = None
+
+        region_statistics = _extract_region_statistics(
+            thermal_analysis_matrix,
+            thermal_box,
+            thermal_image_width,
+            thermal_image_height,
+        )
+
+        if region_statistics is not None:
+            next_detection["max_temp"] = region_statistics["max_value"]
+            next_detection["min_temp"] = region_statistics["min_value"]
+            next_detection["avg_temp"] = region_statistics["avg_value"]
+            next_detection["max_point"] = region_statistics["max_point"]
+            next_detection["min_point"] = region_statistics["min_point"]
+            next_detection["max_raw"] = None
+            next_detection["min_raw"] = None
+            next_detection["avg_raw"] = None
+
+            delta_above_reference = region_statistics["max_value"] - reference_temperature
+            priority, action_required = _classify_priority(delta_above_reference)
+            next_detection["delta_above_reference"] = delta_above_reference
+            next_detection["priority"] = priority
+            next_detection["action_required"] = action_required
+
+        recalculated_detections.append(next_detection)
+
+    return recalculated_detections
+
+
+# ------------------------------
+# [ตัวช่วยจัดระดับความเร่งด่วน]
 # แปลง delta_above_reference -> priority และ action required
 # ------------------------------
 def _classify_priority(delta_above_reference: float) -> Tuple[str, str]:
@@ -1449,7 +1818,7 @@ def _classify_priority(delta_above_reference: float) -> Tuple[str, str]:
 
 
 # ------------------------------
-# [เพิ่มใหม่]
+# [ตัวช่วย log และอัปเดต progress พร้อมกัน]
 # helper สำหรับ log step และอัปเดต progress พร้อมกัน
 # ------------------------------
 def _log_upload_step(request_id: str, step: str, **details: Any) -> None:
@@ -1468,7 +1837,7 @@ def _log_upload_step(request_id: str, step: str, **details: Any) -> None:
 
 
 # ------------------------------
-# [เพิ่มใหม่ทั้งหมด]
+# [ฟังก์ชันแกนกลางของระบบ]
 # ฟังก์ชันแกนกลางของระบบวิเคราะห์ภาพคู่
 #
 # หน้าที่:
@@ -1687,8 +2056,27 @@ def _analyze_saved_pair(
     # ------------------------------
     _log_upload_step(request_id, "annotation_image_open_started")
     with Image.open(thermal_uploaded_image_path) as thermal_source_image:
-        annotated_image = thermal_source_image.convert("RGB")
-    draw = ImageDraw.Draw(annotated_image)
+        # ภาพนี้คือภาพ thermal แบบที่ได้จากไฟล์ต้นฉบับ/กล้อง
+        annotated_image_camera = thermal_source_image.convert("RGB")
+
+    # [เพิ่มในเวอร์ชันล่าสุด]
+    # สร้างภาพ thermal แบบ fixed-range เพิ่มอีกชุด
+    # เพื่อให้ทุกภาพใช้สเกลสีเดียวกันเวลาเปิดดูหรือเทียบข้ามภาพ
+    annotated_image_fixed_range = (
+        _render_fixed_range_thermal_image(
+            thermal_analysis_matrix,
+            thermal_image_width,
+            thermal_image_height,
+        )
+        if has_absolute_temperature
+        else None
+    )
+    # เก็บภาพ fixed-range แบบ "ไม่มี annotation" แยกไว้อีกใบ
+    # เผื่อ frontend อยากใช้ภาพล้วน ๆ สำหรับให้ผู้ใช้ดูหรือเลือก ROI เอง
+    fixed_range_image_plain = annotated_image_fixed_range.copy() if annotated_image_fixed_range is not None else None
+    thermal_draws = [ImageDraw.Draw(annotated_image_camera)]
+    if annotated_image_fixed_range is not None:
+        thermal_draws.append(ImageDraw.Draw(annotated_image_fixed_range))
     _log_upload_step(request_id, "annotation_image_open_finished")
 
     # ------------------------------
@@ -1779,14 +2167,15 @@ def _analyze_saved_pair(
         }
 
         # วาดกรอบ hotspot บนภาพ thermal
-        draw.rectangle(thermal_box, outline="orange", width=3)
-        _draw_hotspot_index_label(
-            draw=draw,
-            thermal_box=thermal_box,
-            hotspot_index=hotspot_index,
-            thermal_image_width=thermal_image_width,
-            thermal_image_height=thermal_image_height,
-        )
+        for thermal_draw in thermal_draws:
+            thermal_draw.rectangle(thermal_box, outline="orange", width=3)
+            _draw_hotspot_index_label(
+                draw=thermal_draw,
+                thermal_box=thermal_box,
+                hotspot_index=hotspot_index,
+                thermal_image_width=thermal_image_width,
+                thermal_image_height=thermal_image_height,
+            )
 
         # ------------------------------
         # ถ้ามี thermal matrix ให้คำนวณค่าสถิติในกรอบ
@@ -1820,38 +2209,40 @@ def _analyze_saved_pair(
                 min_point_thermal_y = int((thermal_y1 + min_position[0]) * thermal_image_height / thermal_height)
 
                 # วาดจุดร้อน/เย็น
-                draw.ellipse(
-                    [
-                        max_point_thermal_x - 4,
-                        max_point_thermal_y - 4,
-                        max_point_thermal_x + 4,
-                        max_point_thermal_y + 4,
-                    ],
-                    fill="red",
-                )
-                draw.ellipse(
-                    [
-                        min_point_thermal_x - 4,
-                        min_point_thermal_y - 4,
-                        min_point_thermal_x + 4,
-                        min_point_thermal_y + 4,
-                    ],
-                    fill="blue",
-                )
+                for thermal_draw in thermal_draws:
+                    thermal_draw.ellipse(
+                        [
+                            max_point_thermal_x - 4,
+                            max_point_thermal_y - 4,
+                            max_point_thermal_x + 4,
+                            max_point_thermal_y + 4,
+                        ],
+                        fill="red",
+                    )
+                    thermal_draw.ellipse(
+                        [
+                            min_point_thermal_x - 4,
+                            min_point_thermal_y - 4,
+                            min_point_thermal_x + 4,
+                            min_point_thermal_y + 4,
+                        ],
+                        fill="blue",
+                    )
                 detection["max_point"] = [max_point_thermal_x, max_point_thermal_y]
                 detection["min_point"] = [min_point_thermal_x, min_point_thermal_y]
 
                 if has_absolute_temperature:
-                    draw.text(
-                        (thermal_box[0], max(0, thermal_box[1] - 15)),
-                        f"max {max_value:.1f}C min {min_value:.1f}C avg {avg_value:.1f}C",
-                        fill="white",
-                    )
+                    for thermal_draw in thermal_draws:
+                        thermal_draw.text(
+                            (thermal_box[0], max(0, thermal_box[1] - 15)),
+                            f"max {max_value:.1f}C min {min_value:.1f}C avg {avg_value:.1f}C",
+                            fill="white",
+                        )
                     detection["max_temp"] = max_value
                     detection["min_temp"] = min_value
                     detection["avg_temp"] = avg_value
 
-                    # [เพิ่มใหม่]
+                    # [ส่วนคำนวณความร้อนเทียบค่าอ้างอิง]
                     # คำนวณ delta_above_reference และ priority
                     if reference_temperature is not None:
                         delta_above_reference = max_value - reference_temperature
@@ -1865,7 +2256,7 @@ def _analyze_saved_pair(
                     detection["min_raw"] = min_value
                     detection["avg_raw"] = avg_value
 
-        # [เพิ่มใหม่]
+        # [ส่วนจับคู่ hotspot กับอุปกรณ์]
         # match hotspot จุดนี้กับ equipment บน RGB
         detection.update(_match_equipment(hotspot_center, equipments, rgb_image_width, rgb_image_height))
         detections.append(detection)
@@ -1879,21 +2270,46 @@ def _analyze_saved_pair(
     # ------------------------------
     annotated_image_filename = f"{file_id}_annotated.jpg"
     annotated_image_path = UPLOAD_DIR / annotated_image_filename
-    annotated_image.save(annotated_image_path, format="JPEG", quality=90)
-    annotated_image.close()
+    annotated_image_camera.save(annotated_image_path, format="JPEG", quality=90)
+    annotated_image_camera.close()
+
+    # [เพิ่มในเวอร์ชันล่าสุด]
+    # นอกจากภาพ annotated ปกติแล้ว เวอร์ชันนี้ยังบันทึก:
+    # - annotated_image_fixed_range = ภาพ fixed-range ที่มีการวาด hotspot แล้ว
+    # - fixed_range_image = ภาพ fixed-range แบบยังไม่วาดอะไร
+    annotated_image_fixed_range_filename = None
+    if annotated_image_fixed_range is not None:
+        annotated_image_fixed_range_filename = f"{file_id}_annotated_fixed_range.jpg"
+        annotated_image_fixed_range_path = UPLOAD_DIR / annotated_image_fixed_range_filename
+        annotated_image_fixed_range.save(annotated_image_fixed_range_path, format="JPEG", quality=90)
+        annotated_image_fixed_range.close()
+
+    fixed_range_image_filename = None
+    if fixed_range_image_plain is not None:
+        fixed_range_image_filename = f"{file_id}_fixed_range.jpg"
+        fixed_range_image_path = UPLOAD_DIR / fixed_range_image_filename
+        fixed_range_image_plain.save(fixed_range_image_path, format="JPEG", quality=90)
+        fixed_range_image_plain.close()
     gc.collect()
 
     _log_upload_step(
         request_id,
         "annotated_image_saved",
         annotated_path=annotated_image_filename,
+        annotated_fixed_range_path=annotated_image_fixed_range_filename,
     )
 
     response = {
         "success": True,
+        "file_id": file_id,
         "uploaded_image": f"/uploads/{thermal_uploaded_image_filename}",
         "uploaded_rgb_image": f"/uploads/{rgb_uploaded_image_filename}",
         "annotated_image": f"/uploads/{annotated_image_filename}",
+        "annotated_image_camera": f"/uploads/{annotated_image_filename}",
+        "annotated_image_fixed_range": (
+            f"/uploads/{annotated_image_fixed_range_filename}" if annotated_image_fixed_range_filename else None
+        ),
+        "fixed_range_image": f"/uploads/{fixed_range_image_filename}" if fixed_range_image_filename else None,
         "detections": detections,
         "has_gps": has_gps,
         "message": None,
@@ -1918,7 +2334,112 @@ def _analyze_saved_pair(
 
 
 # ------------------------------
-# [เพิ่มใหม่ทั้งหมด]
+# [เพิ่มในเวอร์ชันล่าสุด]
+# endpoint นี้เปิดทางให้ frontend ส่งกรอบ ROI ที่ผู้ใช้ลากเองเข้ามา
+# เพื่อคำนวณ reference temperature ใหม่ แล้วอัปเดต priority/action ของ hotspot เดิม
+# จุดเด่นคือ "ไม่ต้องรันโมเดลตรวจจับใหม่" ทำให้ตอบกลับเร็วกว่า
+# ------------------------------
+@app.post("/reference-roi")
+async def apply_reference_roi(request: Request):
+    """
+    คำนวณ reference temperature ใหม่จาก ROI ที่ผู้ใช้ลากบนภาพ thermal
+    แล้วอัปเดต priority/action ของ hotspot เดิมโดยไม่ rerun model
+    """
+    request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:8])
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return _json_error("Reference ROI request must be valid JSON.", request_id, 400)
+
+    file_id = str(payload.get("file_id") or "").strip() if isinstance(payload, dict) else ""
+    if not file_id:
+        return _json_error("Reference ROI request requires file_id.", request_id, 400)
+
+    try:
+        normalized_roi = _parse_normalized_roi(payload.get("roi") if isinstance(payload, dict) else None)
+    except ValueError as error:
+        return _json_error(str(error), request_id, 400, file_id=file_id)
+
+    raw_detections = payload.get("detections") if isinstance(payload, dict) else None
+    if not isinstance(raw_detections, list):
+        return _json_error("Reference ROI request requires detections.", request_id, 400, file_id=file_id)
+
+    detections: list[dict[str, Any]] = []
+    for detection in raw_detections:
+        if not isinstance(detection, dict):
+            return _json_error("Each detection in the ROI request must be an object.", request_id, 400, file_id=file_id)
+        detections.append(dict(detection))
+
+    thermal_file = _find_uploaded_file(file_id, "thermal")
+    if thermal_file is None:
+        return _json_error("Thermal upload not found for the requested file_id.", request_id, 404, file_id=file_id)
+
+    thermal_uploaded_image_filename, thermal_uploaded_image_path = thermal_file
+
+    with Image.open(thermal_uploaded_image_path) as thermal_source_image:
+        thermal_image_width, thermal_image_height = thermal_source_image.size
+
+    thermal_matrix, thermal_error, thermal_mode = extract_thermal_matrix(
+        str(thermal_uploaded_image_path),
+        expected_width=thermal_image_width,
+        expected_height=thermal_image_height,
+    )
+
+    if thermal_matrix is None or thermal_mode != "absolute":
+        return _json_error(
+            thermal_error or "ROI reference requires absolute thermal temperature data.",
+            request_id,
+            400,
+            file_id=file_id,
+        )
+
+    finite_values = thermal_matrix[np.isfinite(thermal_matrix)]
+    if finite_values.size > 0 and float(finite_values.max()) > 1000.0:
+        thermal_analysis_matrix = thermal_matrix * 0.04 - 273.15
+    else:
+        thermal_analysis_matrix = thermal_matrix
+
+    roi_box = _normalized_roi_to_image_box(normalized_roi, thermal_image_width, thermal_image_height)
+    reference_temperature = _compute_reference_temperature_from_roi(
+        thermal_analysis_matrix,
+        roi_box,
+        thermal_image_width,
+        thermal_image_height,
+    )
+    if reference_temperature is None:
+        return _json_error(
+            "Selected ROI does not contain valid temperature pixels.",
+            request_id,
+            400,
+            file_id=file_id,
+        )
+
+    try:
+        recalculated_detections = _recalculate_detections_for_reference_roi(
+            detections,
+            thermal_analysis_matrix,
+            thermal_image_width,
+            thermal_image_height,
+            reference_temperature,
+        )
+    except ValueError as error:
+        return _json_error(str(error), request_id, 400, file_id=file_id)
+
+    return {
+        "success": True,
+        "file_id": file_id,
+        "request_id": request_id,
+        "reference_source": "roi",
+        "reference_temperature": reference_temperature,
+        "roi": normalized_roi,
+        "detections": recalculated_detections,
+        "thermal_image": f"/uploads/{thermal_uploaded_image_filename}",
+    }
+
+
+# ------------------------------
+# ส่วนที่ 5: endpoint สำหรับอัปโหลดไฟล์ทีละใบ
 # endpoint /upload-file
 #
 # ใช้สำหรับ raw streaming upload ทีละไฟล์
@@ -1939,6 +2460,7 @@ async def upload_file_raw(request: Request):
     """
     request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:8])
     started_at = time.perf_counter()
+    batch_context = _get_batch_request_context(request)
 
     kind = (request.query_params.get("kind") or "").strip().lower()
     file_id = (request.query_params.get("file_id") or uuid.uuid4().hex).strip()
@@ -1952,6 +2474,10 @@ async def upload_file_raw(request: Request):
     bytes_written = 0
 
     try:
+        if kind == "thermal" and batch_context.get("item_index") == 1:
+            _log_batch_event(request_id, "batch_started", batch_context)
+
+        _log_batch_event(request_id, "batch_file_started", batch_context, stage=f"upload_{kind}", file=original_name)
         _log_upload_step(
             request_id,
             "raw_upload_started",
@@ -1984,6 +2510,14 @@ async def upload_file_raw(request: Request):
             bytes_written=bytes_written,
             elapsed_seconds=elapsed_seconds,
         )
+        _log_batch_event(
+            request_id,
+            "batch_file_finished",
+            batch_context,
+            stage=f"upload_{kind}",
+            file=original_name,
+            file_id=file_id,
+        )
 
         return {
             "success": True,
@@ -1999,6 +2533,14 @@ async def upload_file_raw(request: Request):
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
         _set_request_progress(request_id, "raw_upload_client_disconnected", kind=kind, elapsed_seconds=elapsed_seconds)
         request_progress[request_id]["failed"] = True
+        _log_batch_event(
+            request_id,
+            "batch_file_failed",
+            batch_context,
+            stage=f"upload_{kind}",
+            file=original_name,
+            reason="client_disconnected",
+        )
         logger.warning("[%s] raw_upload_client_disconnected kind=%s elapsed_seconds=%s", request_id, kind, elapsed_seconds)
         return _json_error(
             "Upload connection dropped before the backend received the full file.",
@@ -2013,6 +2555,14 @@ async def upload_file_raw(request: Request):
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
         _set_request_progress(request_id, "raw_upload_failed", kind=kind, elapsed_seconds=elapsed_seconds)
         request_progress[request_id]["failed"] = True
+        _log_batch_event(
+            request_id,
+            "batch_file_failed",
+            batch_context,
+            stage=f"upload_{kind}",
+            file=original_name,
+            reason="backend_exception",
+        )
         logger.exception("[%s] raw_upload_failed kind=%s elapsed_seconds=%s", request_id, kind, elapsed_seconds)
         return _json_error(
             "Backend failed while receiving the uploaded file.",
@@ -2024,7 +2574,7 @@ async def upload_file_raw(request: Request):
 
 
 # ------------------------------
-# [เพิ่มใหม่ทั้งหมด]
+# ส่วนที่ 6: endpoint สำหรับสั่งวิเคราะห์จากไฟล์ที่อัปโหลดไว้แล้ว
 # endpoint /analyze
 #
 # รับ JSON { "file_id": "..." }
@@ -2039,6 +2589,7 @@ async def analyze_uploaded_pair(request: Request):
     """
     request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:8])
     started_at = time.perf_counter()
+    batch_context = _get_batch_request_context(request)
 
     try:
         payload = await request.json()
@@ -2074,9 +2625,10 @@ async def analyze_uploaded_pair(request: Request):
         thermal_path=thermal_uploaded_image_filename,
         rgb_path=rgb_uploaded_image_filename,
     )
+    _log_batch_event(request_id, "batch_pair_started", batch_context, file_id=file_id)
 
     try:
-        return _analyze_saved_pair(
+        response = _analyze_saved_pair(
             request_id=request_id,
             started_at=started_at,
             file_id=file_id,
@@ -2085,10 +2637,13 @@ async def analyze_uploaded_pair(request: Request):
             rgb_uploaded_image_filename=rgb_uploaded_image_filename,
             rgb_uploaded_image_path=rgb_uploaded_image_path,
         )
+        _log_batch_event(request_id, "batch_pair_finished", batch_context, file_id=file_id)
+        return response
     except Exception:
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
         _set_request_progress(request_id, "analyze_failed", file_id=file_id, elapsed_seconds=elapsed_seconds)
         request_progress[request_id]["failed"] = True
+        _log_batch_event(request_id, "batch_pair_failed", batch_context, file_id=file_id, reason="backend_exception")
         logger.exception("[%s] analyze_failed file_id=%s elapsed_seconds=%s", request_id, file_id, elapsed_seconds)
         return _json_error(
             "Backend failed while analyzing the uploaded image pair.",
@@ -2099,8 +2654,8 @@ async def analyze_uploaded_pair(request: Request):
 
 
 # ------------------------------
-# [เพิ่มใหม่ทั้งหมด]
-# endpoint ให้ frontend มาดู progress ของ request
+# ส่วนที่ 7: endpoint สำหรับดู progress ของงาน
+# endpoint นี้ให้ frontend มาเช็คได้ว่าตอนนี้ backend ทำถึงขั้นไหนแล้ว
 # ------------------------------
 @app.get("/progress/{request_id}")
 def get_request_progress(request_id: str):
