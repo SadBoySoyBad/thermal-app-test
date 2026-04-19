@@ -48,23 +48,21 @@ const MapView = dynamic(() => import("./MapView"), { ssr: false });
 // warning = ข้อความเตือน
 type MessageTone = "default" | "warning";
 
-type BatchRunContext = {
-  batchRunId: string;
-  fileTotal: number;
-  fileNames: string;
-  pairIndex: number;
-  pairTotal: number;
-  pairLabel: string;
-  thermalFileName: string;
-  rgbFileName: string;
+// [เพิ่มใหม่]
+// เก็บข้อมูล batch ที่กำลัง upload เพื่อส่งให้ backend เขียน log แบบอ่านง่าย
+// ภาษาคนง่าย ๆ คือ backend จะรู้ว่ารอบนี้มีทั้งหมดกี่ไฟล์ และไฟล์ชื่ออะไรบ้าง
+type UploadBatchLogContext = {
+  batchId: string;
+  totalPairs: number;
+  totalFiles: number;
+  fileNames: string[];
 };
 
 // เหมือนเดิม: อ่าน backend URL จาก env
 const backendBaseUrl = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 
-// [เพิ่มใหม่ล่าสุด]
-// กำหนดช่วงอุณหภูมิแบบคงที่สำหรับภาพ fixed range
-// ทำให้เอาหลายภาพมาเทียบกันตรง ๆ ได้ง่ายขึ้นว่า สีเดียวกันหมายถึงช่วงอุณหภูมิใกล้เคียงกัน
+// ช่วงสีแบบ fixed range ที่ใช้กับภาพ thermal ชุดที่สอง
+// ภาพนี้ไม่ได้เอาไปใช้กับ model แต่เอาไว้ "แสดงผลให้คนดู" เพื่อให้แต่ละรูปเทียบสีกันได้ง่ายขึ้น
 const FIXED_RANGE_MIN_C = 25;
 const FIXED_RANGE_MAX_C = 40;
 
@@ -165,9 +163,9 @@ function parseNormalizedRoi(value: unknown): NormalizedRoi | null {
   return { x, y, width, height };
 }
 
-// [เพิ่มใหม่ล่าสุด]
-// helper สำหรับตั้งชื่อไฟล์ตอนดาวน์โหลดภาพ
-// เช่น เติม _fixed-range ต่อท้ายชื่อเดิมโดยยังคงนามสกุลไฟล์ไว้
+// helper สำหรับตั้งชื่อไฟล์ตอนกดดาวน์โหลด
+// ถ้าไฟล์มีนามสกุล เช่น image.JPG จะเติม suffix ก่อน .JPG
+// เช่น image.JPG + "_fixed-range" -> image_fixed-range.JPG
 function buildDownloadFileName(fileName: string, suffix = "", fallbackExtension = ".jpg") {
   const lastDot = fileName.lastIndexOf(".");
   if (lastDot > 0) {
@@ -175,6 +173,20 @@ function buildDownloadFileName(fileName: string, suffix = "", fallbackExtension 
   }
 
   return `${fileName}${suffix}${fallbackExtension}`;
+}
+
+// [เพิ่มใหม่]
+// สร้างรายการชื่อไฟล์จริงที่ผู้ใช้ upload ในรอบนี้
+// เรียงตามคู่ภาพ: thermal แล้วตามด้วย rgb เพื่อให้ log ไล่อ่านตาม flow ได้ง่าย
+function buildUploadBatchLogContext(batchId: string, pairs: MatchedPair[]): UploadBatchLogContext {
+  const fileNames = pairs.flatMap((pair) => [pair.thermal.name, pair.rgb.name]);
+
+  return {
+    batchId,
+    totalPairs: pairs.length,
+    totalFiles: fileNames.length,
+    fileNames,
+  };
 }
 
 export default function Home() {
@@ -292,13 +304,13 @@ export default function Home() {
   // hotspot ที่กำลังถูกเลือกดูอยู่จริง
   const selectedDetection = selectedPair?.detections[safeSelectedDetectionIndex] ?? null;
 
-  // [เพิ่มใหม่ล่าสุด]
-  // กลุ่มตัวแปรนี้คือ "ภาพและสถานะที่ใช้กับหน้าดูผลแบบละเอียด"
-  // ภาษาคนง่าย ๆ คือ เลือกไว้ล่วงหน้าว่าตอนนี้หน้าจอควรใช้รูปไหน กด ROI ได้ไหม และปุ่มไหนควรเปิด/ปิด
+  // กลุ่มรูปที่ใช้แสดงในหน้าผลลัพธ์
+  // selectedCameraImage = ภาพ thermal สีเดิมจากกล้องที่มีกรอบ hotspot
+  // selectedFixedRangeImage = ภาพ thermal ที่ใช้ช่วงสีคงที่และมีกรอบ hotspot
+  // selectedThermalDownloadImage / selectedFixedRangeDownloadImage = รูปแบบไม่มีกรอบ hotspot สำหรับโหลดลงเครื่อง
   const selectedCameraImage = selectedPair?.annotatedImageCamera ?? selectedPair?.annotatedImage ?? null;
   const selectedFixedRangeImage = selectedPair?.annotatedImageFixedRange ?? null;
   const selectedThermalDownloadImage = selectedPair?.thermalImage ?? null;
-  const selectedRgbImage = selectedPair?.rgbImage ?? null;
   const selectedFixedRangeDownloadImage = selectedPair?.fixedRangeImage ?? null;
   const liveRoiDraft =
     selectedPair && roiDragState && roiDragState.pairId === selectedPair.id
@@ -308,7 +320,7 @@ export default function Home() {
   const activeReferenceRoi = liveRoiDraft ?? selectedPairPendingRoi ?? selectedPair?.referenceRoi ?? null;
   const canShowReferenceRoiUi =
     selectedPair !== null &&
-    (selectedCameraImage !== null || selectedFixedRangeImage !== null) &&
+    selectedCameraImage !== null &&
     (selectedPair.thermalAvailable !== false ||
       selectedPair.referenceTemperature !== null ||
       selectedPair.thermalMode === "absolute");
@@ -353,9 +365,8 @@ export default function Home() {
     setMessageTone(tone);
   }
 
-  // [เพิ่มใหม่ล่าสุด]
-  // ดาวน์โหลดรูปที่หน้าเว็บกำลังแสดงอยู่ลงเครื่องผู้ใช้
-  // ใช้ได้กับรูป thermal, RGB และ fixed-range
+  // ดาวน์โหลดรูปจาก URL ที่ backend ส่งมาให้
+  // ใช้กับปุ่มใต้รูปแต่ละช่อง เพื่อให้ผู้ใช้โหลดภาพต้นฉบับหรือภาพ fixed range แบบไม่มีกรอบ hotspot
   async function downloadImageAsset(assetUrl: string | null, fileName: string) {
     if (!assetUrl) {
       showMessage("This image is unavailable for download.", "warning");
@@ -754,8 +765,10 @@ export default function Home() {
   async function uploadSingleFile(
     file: File,
     kind: "thermal" | "rgb",
-    batchRunContext: BatchRunContext,
-    existingFileId?: string,
+    existingFileId: string | undefined,
+    batchContext: UploadBatchLogContext,
+    pair: MatchedPair,
+    pairIndex: number,
   ) {
     const params = new URLSearchParams({ kind });
     if (existingFileId) {
@@ -763,23 +776,25 @@ export default function Home() {
     }
 
     const uploadRequestId = createRequestId();
+    const uploadFileIndex = pairIndex * 2 + (kind === "thermal" ? 1 : 2);
+    const uploadHeaders: Record<string, string> = {
+      // โค้ดใหม่ส่งไฟล์แบบ raw body พร้อม header metadata
+      "Content-Type": file.type || "application/octet-stream",
+      "x-file-name": file.name,
+      "x-request-id": uploadRequestId,
+      "x-batch-id": batchContext.batchId,
+      "x-batch-file-index": String(uploadFileIndex),
+      "x-batch-total-files": String(batchContext.totalFiles),
+      "x-batch-total-pairs": String(batchContext.totalPairs),
+      "x-batch-pair-index": String(pairIndex + 1),
+      "x-batch-pair-label": pair.displayName,
+      "x-thermal-file-name": pair.thermal.name,
+      "x-rgb-file-name": pair.rgb.name,
+    };
 
     const uploadResponse = await fetch(`${backendBaseUrl}/upload-file?${params.toString()}`, {
       method: "POST",
-      headers: {
-        // โค้ดใหม่ส่งไฟล์แบบ raw body พร้อม header metadata
-        "Content-Type": file.type || "application/octet-stream",
-        "x-file-name": file.name,
-        "x-request-id": uploadRequestId,
-        "x-batch-run-id": batchRunContext.batchRunId,
-        "x-batch-file-total": String(batchRunContext.fileTotal),
-        "x-batch-file-names": batchRunContext.fileNames,
-        "x-batch-item-index": String(batchRunContext.pairIndex),
-        "x-batch-item-total": String(batchRunContext.pairTotal),
-        "x-batch-item-label": batchRunContext.pairLabel,
-        "x-batch-item-thermal-name": batchRunContext.thermalFileName,
-        "x-batch-item-rgb-name": batchRunContext.rgbFileName,
-      },
+      headers: uploadHeaders,
       body: file,
     });
 
@@ -814,12 +829,12 @@ export default function Home() {
     2) upload rgb
     3) เรียก /analyze
   */
-  async function analyzeMatchedPair(pair: MatchedPair, batchRunContext: BatchRunContext) {
-    const thermalUpload = await uploadSingleFile(pair.thermal, "thermal", batchRunContext);
+  async function analyzeMatchedPair(pair: MatchedPair, pairIndex: number, batchContext: UploadBatchLogContext) {
+    const thermalUpload = await uploadSingleFile(pair.thermal, "thermal", undefined, batchContext, pair, pairIndex);
     setRequestId(thermalUpload.requestId);
 
     setProgressMessage("Uploading RGB image...");
-    const rgbUpload = await uploadSingleFile(pair.rgb, "rgb", batchRunContext, thermalUpload.fileId);
+    const rgbUpload = await uploadSingleFile(pair.rgb, "rgb", thermalUpload.fileId, batchContext, pair, pairIndex);
     setRequestId(rgbUpload.requestId);
 
     setProgressMessage("Running hotspot and equipment analysis...");
@@ -831,14 +846,13 @@ export default function Home() {
       headers: {
         "Content-Type": "application/json",
         "x-request-id": analyzeRequestId,
-        "x-batch-run-id": batchRunContext.batchRunId,
-        "x-batch-file-total": String(batchRunContext.fileTotal),
-        "x-batch-file-names": batchRunContext.fileNames,
-        "x-batch-item-index": String(batchRunContext.pairIndex),
-        "x-batch-item-total": String(batchRunContext.pairTotal),
-        "x-batch-item-label": batchRunContext.pairLabel,
-        "x-batch-item-thermal-name": batchRunContext.thermalFileName,
-        "x-batch-item-rgb-name": batchRunContext.rgbFileName,
+        "x-batch-id": batchContext.batchId,
+        "x-batch-total-files": String(batchContext.totalFiles),
+        "x-batch-total-pairs": String(batchContext.totalPairs),
+        "x-batch-pair-index": String(pairIndex + 1),
+        "x-batch-pair-label": pair.displayName,
+        "x-thermal-file-name": pair.thermal.name,
+        "x-rgb-file-name": pair.rgb.name,
       },
       body: JSON.stringify({ file_id: rgbUpload.fileId }),
     });
@@ -869,6 +883,19 @@ export default function Home() {
     ใหม่: วนทีละคู่จากชุดไฟล์ที่เลือกมา
     แต่ backend pipeline ภายในยังทำงานแบบเดิมทุกคู่
   */
+  async function logUploadBatchStart(batchContext: UploadBatchLogContext) {
+    const batchLogRequestId = createRequestId();
+
+    await fetch(`${backendBaseUrl}/batch-log`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-request-id": batchLogRequestId,
+      },
+      body: JSON.stringify(batchContext),
+    });
+  }
+
   async function handleUpload() {
     if (matchedPairs.length === 0) {
       showMessage("Please choose image files that can be matched into thermal/RGB pairs.", "warning");
@@ -884,27 +911,23 @@ export default function Home() {
 
     const nextFailedPairs: FailedPair[] = [];
     const nextResults: AnalysisResult[] = [];
-    const batchRunId = createRequestId();
-    const batchFileNames = selectedFiles.map((file) => file.name).join(" | ");
+    const batchContext = buildUploadBatchLogContext(createRequestId(), matchedPairs);
 
     try {
+      try {
+        await logUploadBatchStart(batchContext);
+      } catch {
+        // ถ้า endpoint สำหรับ log ล้มเหลว ห้ามทำให้การวิเคราะห์ภาพหยุด
+        // เพราะส่วนนี้มีไว้ช่วย debug บน terminal/render เท่านั้น
+      }
+
       for (const [pairIndex, pair] of matchedPairs.entries()) {
-        const batchRunContext: BatchRunContext = {
-          batchRunId,
-          fileTotal: selectedFiles.length,
-          fileNames: batchFileNames,
-          pairIndex: pairIndex + 1,
-          pairTotal: matchedPairs.length,
-          pairLabel: pair.displayName,
-          thermalFileName: pair.thermal.name,
-          rgbFileName: pair.rgb.name,
-        };
         setActivePairIndex(pairIndex + 1);
         setActivePairLabel(pair.displayName);
         setProgressMessage("Uploading thermal image...");
 
         try {
-          const result = await analyzeMatchedPair(pair, batchRunContext);
+          const result = await analyzeMatchedPair(pair, pairIndex, batchContext);
           nextResults.push(result);
           setResults([...nextResults]);
           setSelectedPairIndex(nextResults.length - 1);
@@ -1174,6 +1197,10 @@ export default function Home() {
 
           {selectedPair && (
             <div className="selectedPairLayout">
+              {/* แถวบนของผลลัพธ์
+                 ซ้ายคือภาพ thermal สีเดิมจากกล้องที่วาด hotspot แล้ว
+                 ขวาคือข้อมูลของรูปนี้และ hotspot ที่เลือกอยู่
+              */}
               <div className="selectedPairHeroGrid">
                 <article className="comparisonCard">
                   <div className="comparisonCardHeader">
@@ -1213,6 +1240,51 @@ export default function Home() {
                     <div className="comparisonPlaceholder">Thermal camera image is unavailable for this pair.</div>
                   )}
 
+                  {/* [เพิ่มใหม่ล่าสุด]
+                     แถบเครื่องมือ ROI อยู่ใต้รูป thermal camera ที่ใช้ลากกรอบจริง
+                     ผู้ใช้จะเห็นรูป ลากกรอบ แล้วกด Apply ROI ต่อกันในจุดเดียว
+                  */}
+                  {canShowReferenceRoiUi && (
+                    <div className="roiToolbar">
+                      <div className="roiToolbarHeader">
+                        <div className="roiToolbarCopy">
+                          <p className="roiToolbarTitle">Reference ROI</p>
+                          <p className="roiToolbarHint">
+                            {activeReferenceRoi
+                              ? "Drag a new box on the thermal camera image if you want to replace the current selection, then click Apply ROI."
+                              : "Draw a box on the thermal camera image, then click Apply ROI."}
+                          </p>
+                          {!canApplyReferenceRoiBackend && (
+                            <p className="roiToolbarWarning">
+                              ROI recalculation is not ready because the backend is still running an older version.
+                              Restart the backend, then analyze again.
+                            </p>
+                          )}
+                        </div>
+                        <div className="roiActionRow">
+                          <button
+                            className="roiButton"
+                            type="button"
+                            onClick={() => {
+                              void applyReferenceRoi();
+                            }}
+                            disabled={!canApplyReferenceRoi}
+                          >
+                            {isApplyingReferenceRoi ? "Applying ROI..." : "Apply ROI"}
+                          </button>
+                          <button
+                            className="roiButton secondary"
+                            type="button"
+                            onClick={resetReferenceRoi}
+                            disabled={!canResetReferenceRoi}
+                          >
+                            Reset to Auto
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="comparisonCardActions">
                     <button
                       className="imageDownloadButton"
@@ -1230,6 +1302,9 @@ export default function Home() {
                   </div>
                 </article>
 
+                {/* กล่องข้อมูลด้านขวา
+                   รวม metadata ของรูป, รายการ hotspot, และรายละเอียด hotspot ที่เลือกอยู่
+                */}
                 <div className="selectedPairInfoStack">
                   <article className="detailCard">
                     <h3 className="detailTitle">
@@ -1274,40 +1349,27 @@ export default function Home() {
                       <div className="detailStack">
                         <p className="detailLine">Equipment: {getEquipmentLabel(selectedDetection)}</p>
                         <p className="detailLine">Temperature: {getTemperatureDetail(selectedDetection)}</p>
-                        {/* [เพิ่มใหม่]
-                           แสดงค่า reference เฉพาะ hotspot ที่กำลังเลือก
-                        */}
                         {typeof selectedDetection.reference_temp === "number" && (
                           <p className="detailLine">
                             Reference{selectedPair.referenceSource === "roi" ? " (ROI)" : ""}:{" "}
                             {selectedDetection.reference_temp.toFixed(1)} {DEGREE_C}
                           </p>
                         )}
-                        {/* [เพิ่มใหม่]
-                           แสดงค่า rise above reference
-                        */}
                         {typeof selectedDetection.delta_above_reference === "number" && (
                           <p className="detailLine">
                             Rise above reference: {selectedDetection.delta_above_reference.toFixed(1)} {DEGREE_C}
                           </p>
                         )}
-                        {/* [เพิ่มใหม่]
-                           แสดงวิธี match และระยะ
-                        */}
                         <p className="detailLine">
                           Match: {selectedDetection.match_method ?? "unknown"}
                           {typeof selectedDetection.match_distance === "number"
                             ? ` (${selectedDetection.match_distance.toFixed(1)} px)`
                             : ""}
                         </p>
-                        {/* [เพิ่มใหม่]
-                           แสดง priority และ action */}
                         <p className="detailLine">Priority: {selectedDetection.priority ?? "Not rated"}</p>
                         <p className="detailLine">
                           Action: {selectedDetection.action_required ?? "No action suggested"}
                         </p>
-                        {/* [เพิ่มใหม่]
-                           confidence ของ equipment model */}
                         {typeof selectedDetection.equipment_confidence === "number" && (
                           <p className="detailLine">
                             Equipment confidence: {selectedDetection.equipment_confidence.toFixed(2)}
@@ -1321,20 +1383,24 @@ export default function Home() {
                 </div>
               </div>
 
+              {/* แถวล่างของรูปเปรียบเทียบ
+                 ซ้ายคือภาพ thermal สีเดิมจากกล้องเหมือนรูปบน แต่ไม่มีพื้นที่ลาก ROI
+                 ขวาคือ thermal fixed range ที่วาด hotspot แล้ว
+              */}
               <div className="comparisonGrid">
                 <article className="comparisonCard">
                   <div className="comparisonCardHeader">
                     <div className="comparisonCardCopy">
-                      <p className="comparisonCardTitle">RGB image</p>
-                      <p className="comparisonCardHint">Original RGB image without hotspot overlays.</p>
+                      <p className="comparisonCardTitle">Thermal camera image</p>
+                      <p className="comparisonCardHint">Same thermal camera result as above, shown without ROI drawing.</p>
                     </div>
                   </div>
 
-                  {selectedRgbImage ? (
+                  {selectedCameraImage ? (
                     <div className="annotatedImageFrame">
                       <Image
-                        src={selectedRgbImage}
-                        alt={`RGB image for ${selectedPair.displayName}`}
+                        src={selectedCameraImage}
+                        alt={`Thermal camera result copy for ${selectedPair.displayName}`}
                         width={1600}
                         height={900}
                         unoptimized
@@ -1342,7 +1408,7 @@ export default function Home() {
                       />
                     </div>
                   ) : (
-                    <div className="comparisonPlaceholder">RGB image is unavailable for this pair.</div>
+                    <div className="comparisonPlaceholder">Thermal camera image is unavailable for this pair.</div>
                   )}
 
                   <div className="comparisonCardActions">
@@ -1350,9 +1416,12 @@ export default function Home() {
                       className="imageDownloadButton"
                       type="button"
                       onClick={() =>
-                        void downloadImageAsset(selectedRgbImage, buildDownloadFileName(selectedPair.rgbFileName))
+                        void downloadImageAsset(
+                          selectedThermalDownloadImage,
+                          buildDownloadFileName(selectedPair.thermalFileName),
+                        )
                       }
-                      disabled={!selectedRgbImage}
+                      disabled={!selectedThermalDownloadImage}
                     >
                       Download image
                     </button>
@@ -1373,7 +1442,7 @@ export default function Home() {
                   </div>
 
                   {selectedFixedRangeImage ? (
-                    <div className={`annotatedImageFrame ${canShowReferenceRoiUi ? "annotatedImageFrameInteractive" : ""}`}>
+                    <div className="annotatedImageFrame">
                       <Image
                         src={selectedFixedRangeImage}
                         alt={`Fixed-range thermal result for ${selectedPair.displayName}`}
@@ -1382,21 +1451,6 @@ export default function Home() {
                         unoptimized
                         className="annotatedImage"
                       />
-                      {canShowReferenceRoiUi && (
-                        <div
-                          className={`annotatedRoiOverlay ${isApplyingReferenceRoi ? "disabled" : ""}`}
-                          onPointerDown={handleRoiPointerDown}
-                          onPointerMove={handleRoiPointerMove}
-                          onPointerUp={finishRoiPointer}
-                          onPointerCancel={handleRoiPointerCancel}
-                        >
-                          {activeReferenceRoi && (
-                            <div className="annotatedRoiBox" style={getRoiStyle(activeReferenceRoi)}>
-                              <span className="annotatedRoiLabel">Reference ROI</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
                     </div>
                   ) : (
                     <div className="comparisonPlaceholder warning">
@@ -1445,50 +1499,6 @@ export default function Home() {
                   Reference temperature{selectedPair.referenceSource === "roi" ? " (ROI)" : ""}:{" "}
                   {selectedPair.referenceTemperature.toFixed(1)} {DEGREE_C}
                 </p>
-              )}
-
-              {/* [เพิ่มใหม่ล่าสุด]
-                 แถบเครื่องมือ ROI สำหรับวาดกรอบ, ส่งไปคำนวณ, หรือรีเซ็ตกลับเป็น Auto
-              */}
-              {canShowReferenceRoiUi && (
-                <div className="roiToolbar">
-                  <div className="roiToolbarHeader">
-                    <div className="roiToolbarCopy">
-                      <p className="roiToolbarTitle">Reference ROI</p>
-                      <p className="roiToolbarHint">
-                        {activeReferenceRoi
-                          ? "Drag a new box on either image if you want to replace the current selection, then click Apply ROI."
-                          : "Draw a box on either thermal image, then click Apply ROI."}
-                      </p>
-                      {!canApplyReferenceRoiBackend && (
-                        <p className="roiToolbarWarning">
-                          ROI recalculation is not ready because the backend is still running an older version. Restart
-                          the backend, then analyze again.
-                        </p>
-                      )}
-                    </div>
-                    <div className="roiActionRow">
-                      <button
-                        className="roiButton"
-                        type="button"
-                        onClick={() => {
-                          void applyReferenceRoi();
-                        }}
-                        disabled={!canApplyReferenceRoi}
-                      >
-                        {isApplyingReferenceRoi ? "Applying ROI..." : "Apply ROI"}
-                      </button>
-                      <button
-                        className="roiButton secondary"
-                        type="button"
-                        onClick={resetReferenceRoi}
-                        disabled={!canResetReferenceRoi}
-                      >
-                        Reset to Auto
-                      </button>
-                    </div>
-                  </div>
-                </div>
               )}
             </div>
           )}

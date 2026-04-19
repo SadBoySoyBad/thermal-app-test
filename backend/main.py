@@ -6,7 +6,7 @@
 # ถ้าเริ่มอ่านครั้งแรก แนะนำลำดับนี้:
 # 1) อ่านค่าคงที่และ config ด้านบน
 # 2) อ่านฟังก์ชัน `_analyze_saved_pair()` (แกนหลักของ pipeline)
-# 3) อ่าน endpoint `/upload-file`, `/analyze`, `/reference-roi`, `/progress`
+# 3) อ่าน endpoint `/batch-log`, `/upload-file`, `/analyze`, `/reference-roi`, `/progress`
 #
 # สรุปความต่างจากโค้ดเก่า:
 # 1) จากเดิมรองรับภาพ thermal ไฟล์เดียว
@@ -1836,6 +1836,54 @@ def _log_upload_step(request_id: str, step: str, **details: Any) -> None:
         logger.info("[%s] %s", request_id, step)
 
 
+# [เพิ่มใหม่]
+# helper ชุดนี้ใช้ทำ log สำหรับอ่านบน terminal/render ให้เป็นภาษาคนมากขึ้น
+# ไม่ได้เปลี่ยนผลวิเคราะห์ภาพ แค่ช่วยให้เห็นว่า batch ไหนกำลังทำไฟล์อะไรอยู่
+def _compact_log_details(details: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in details.items() if value not in (None, "")}
+
+
+def _safe_positive_int(value: Any) -> Optional[int]:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _read_batch_log_headers(request: Request) -> dict[str, Any]:
+    total_files = _safe_positive_int(request.headers.get("x-batch-total-files"))
+    total_pairs = _safe_positive_int(request.headers.get("x-batch-total-pairs"))
+    file_index = _safe_positive_int(request.headers.get("x-batch-file-index"))
+    pair_index = _safe_positive_int(request.headers.get("x-batch-pair-index"))
+
+    details = {
+        "batch_id": (request.headers.get("x-batch-id") or "").strip(),
+        "total_files": total_files,
+        "total_pairs": total_pairs,
+        "file_index": file_index,
+        "pair_index": pair_index,
+        "pair_label": (request.headers.get("x-batch-pair-label") or "").strip(),
+    }
+
+    # เพิ่ม progress แบบอ่านง่าย เช่น file_progress=3/8, pair_progress=2/4
+    if file_index is not None and total_files is not None:
+        details["file_progress"] = f"{file_index}/{total_files}"
+    if pair_index is not None and total_pairs is not None:
+        details["pair_progress"] = f"{pair_index}/{total_pairs}"
+
+    return _compact_log_details(details)
+
+
+def _log_readable_event(request_id: str, icon: str, event: str, **details: Any) -> None:
+    clean_details = _compact_log_details(details)
+    detail_text = " ".join(f"{key}={value}" for key, value in clean_details.items())
+    if detail_text:
+        logger.info("[%s] %s %s %s", request_id, icon, event, detail_text)
+    else:
+        logger.info("[%s] %s %s", request_id, icon, event)
+
+
 # ------------------------------
 # [ฟังก์ชันแกนกลางของระบบ]
 # ฟังก์ชันแกนกลางของระบบวิเคราะห์ภาพคู่
@@ -2059,9 +2107,10 @@ def _analyze_saved_pair(
         # ภาพนี้คือภาพ thermal แบบที่ได้จากไฟล์ต้นฉบับ/กล้อง
         annotated_image_camera = thermal_source_image.convert("RGB")
 
-    # [เพิ่มในเวอร์ชันล่าสุด]
-    # สร้างภาพ thermal แบบ fixed-range เพิ่มอีกชุด
-    # เพื่อให้ทุกภาพใช้สเกลสีเดียวกันเวลาเปิดดูหรือเทียบข้ามภาพ
+    # สร้างภาพ thermal แบบ fixed range เพิ่มอีกชุด
+    # ภาพนี้ใช้ช่วงสีคงที่จาก DISPLAY_TEMP_MIN_C ถึง DISPLAY_TEMP_MAX_C
+    # จุดประสงค์คือให้คนดูเปรียบเทียบหลายภาพได้ง่ายขึ้นว่า สีที่ใกล้กันหมายถึงอุณหภูมิที่ใกล้กัน
+    # สำคัญ: ภาพนี้ใช้เพื่อการแสดงผลเท่านั้น ไม่ได้เอาไปเปลี่ยนผล model หรือค่าคำนวณ hotspot
     annotated_image_fixed_range = (
         _render_fixed_range_thermal_image(
             thermal_analysis_matrix,
@@ -2071,9 +2120,13 @@ def _analyze_saved_pair(
         if has_absolute_temperature
         else None
     )
-    # เก็บภาพ fixed-range แบบ "ไม่มี annotation" แยกไว้อีกใบ
-    # เผื่อ frontend อยากใช้ภาพล้วน ๆ สำหรับให้ผู้ใช้ดูหรือเลือก ROI เอง
+
+    # เก็บ fixed-range แบบไม่มีกรอบ hotspot แยกไว้ก่อน
+    # frontend ใช้รูปนี้เป็นไฟล์ดาวน์โหลด เพื่อให้ผู้ใช้ได้ภาพล้วน ๆ ไม่ติด annotation
     fixed_range_image_plain = annotated_image_fixed_range.copy() if annotated_image_fixed_range is not None else None
+
+    # thermal_draws คือรายการ canvas ที่ต้องวาด hotspot ทับ
+    # มีภาพกล้องปกติเสมอ และมีภาพ fixed-range เพิ่มเมื่ออ่าน absolute temperature ได้
     thermal_draws = [ImageDraw.Draw(annotated_image_camera)]
     if annotated_image_fixed_range is not None:
         thermal_draws.append(ImageDraw.Draw(annotated_image_fixed_range))
@@ -2273,10 +2326,9 @@ def _analyze_saved_pair(
     annotated_image_camera.save(annotated_image_path, format="JPEG", quality=90)
     annotated_image_camera.close()
 
-    # [เพิ่มในเวอร์ชันล่าสุด]
-    # นอกจากภาพ annotated ปกติแล้ว เวอร์ชันนี้ยังบันทึก:
-    # - annotated_image_fixed_range = ภาพ fixed-range ที่มีการวาด hotspot แล้ว
-    # - fixed_range_image = ภาพ fixed-range แบบยังไม่วาดอะไร
+    # บันทึกภาพ fixed-range เพิ่ม 2 แบบ
+    # 1) annotated_image_fixed_range = มีกรอบ hotspot และข้อความเหมือนภาพหลัก
+    # 2) fixed_range_image = ไม่มีกรอบ hotspot เอาไว้ให้ปุ่ม Download โหลดภาพล้วน
     annotated_image_fixed_range_filename = None
     if annotated_image_fixed_range is not None:
         annotated_image_fixed_range_filename = f"{file_id}_annotated_fixed_range.jpg"
@@ -2439,6 +2491,57 @@ async def apply_reference_roi(request: Request):
 
 
 # ------------------------------
+# [เพิ่มใหม่]
+# endpoint สำหรับเขียน log สรุป batch ก่อนเริ่ม upload จริง
+#
+# frontend จะเรียก endpoint นี้ 1 ครั้งต่อการกด Analyze All Pairs
+# เพื่อให้ terminal/render เห็นว่า batch นี้มีทั้งหมดกี่ไฟล์ และชื่อไฟล์อะไรบ้าง
+# ------------------------------
+@app.post("/batch-log")
+async def log_upload_batch(request: Request):
+    request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:8])
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return _json_error("Batch log request must be valid JSON.", request_id, 400)
+
+    raw_file_names = payload.get("fileNames") or payload.get("file_names") or []
+    file_names = [str(file_name) for file_name in raw_file_names] if isinstance(raw_file_names, list) else []
+    total_files = _safe_positive_int(payload.get("totalFiles") or payload.get("total_files")) or len(file_names)
+    total_pairs = _safe_positive_int(payload.get("totalPairs") or payload.get("total_pairs"))
+    batch_id = str(payload.get("batchId") or payload.get("batch_id") or request_id).strip()
+
+    _log_readable_event(
+        request_id,
+        "📦",
+        "upload_batch_summary",
+        batch_id=batch_id,
+        total_files=total_files,
+        total_pairs=total_pairs,
+        filenames=" | ".join(file_names),
+    )
+
+    for file_index, file_name in enumerate(file_names, start=1):
+        _log_readable_event(
+            request_id,
+            "📄",
+            "upload_batch_file",
+            batch_id=batch_id,
+            file_index=f"{file_index}/{total_files}",
+            filename=file_name,
+        )
+
+    return {
+        "success": True,
+        "request_id": request_id,
+        "batch_id": batch_id,
+        "total_files": total_files,
+        "total_pairs": total_pairs,
+    }
+
+
+# ------------------------------
 # ส่วนที่ 5: endpoint สำหรับอัปโหลดไฟล์ทีละใบ
 # endpoint /upload-file
 #
@@ -2460,11 +2563,11 @@ async def upload_file_raw(request: Request):
     """
     request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:8])
     started_at = time.perf_counter()
-    batch_context = _get_batch_request_context(request)
 
     kind = (request.query_params.get("kind") or "").strip().lower()
     file_id = (request.query_params.get("file_id") or uuid.uuid4().hex).strip()
     original_name = (request.headers.get("x-file-name") or f"{kind or 'upload'}.jpg").strip()
+    batch_details = _read_batch_log_headers(request)
 
     if kind not in {"thermal", "rgb"}:
         return _json_error("Upload kind must be 'thermal' or 'rgb'.", request_id, 400)
@@ -2474,10 +2577,15 @@ async def upload_file_raw(request: Request):
     bytes_written = 0
 
     try:
-        if kind == "thermal" and batch_context.get("item_index") == 1:
-            _log_batch_event(request_id, "batch_started", batch_context)
-
-        _log_batch_event(request_id, "batch_file_started", batch_context, stage=f"upload_{kind}", file=original_name)
+        _log_readable_event(
+            request_id,
+            "🚀",
+            "upload_file_started",
+            file_id=file_id,
+            kind=kind,
+            filename=original_name,
+            **batch_details,
+        )
         _log_upload_step(
             request_id,
             "raw_upload_started",
@@ -2485,6 +2593,7 @@ async def upload_file_raw(request: Request):
             kind=kind,
             filename=original_name,
             content_length=request.headers.get("content-length"),
+            **batch_details,
         )
 
         # อ่าน request body แบบ stream เพื่อลดการใช้ memory
@@ -2501,22 +2610,27 @@ async def upload_file_raw(request: Request):
             return _json_error("Uploaded file was empty.", request_id, 400, file_id=file_id, kind=kind)
 
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _log_readable_event(
+            request_id,
+            "✅",
+            "upload_file_finished",
+            file_id=file_id,
+            kind=kind,
+            filename=original_name,
+            bytes_written=bytes_written,
+            elapsed_seconds=elapsed_seconds,
+            **batch_details,
+        )
         _log_upload_step(
             request_id,
             "raw_upload_finished",
             file_id=file_id,
             kind=kind,
+            filename=original_name,
             saved_path=upload_filename,
             bytes_written=bytes_written,
             elapsed_seconds=elapsed_seconds,
-        )
-        _log_batch_event(
-            request_id,
-            "batch_file_finished",
-            batch_context,
-            stage=f"upload_{kind}",
-            file=original_name,
-            file_id=file_id,
+            **batch_details,
         )
 
         return {
@@ -2531,16 +2645,18 @@ async def upload_file_raw(request: Request):
         if upload_path.exists():
             upload_path.unlink()
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _log_readable_event(
+            request_id,
+            "⚠️",
+            "upload_file_disconnected",
+            file_id=file_id,
+            kind=kind,
+            filename=original_name,
+            elapsed_seconds=elapsed_seconds,
+            **batch_details,
+        )
         _set_request_progress(request_id, "raw_upload_client_disconnected", kind=kind, elapsed_seconds=elapsed_seconds)
         request_progress[request_id]["failed"] = True
-        _log_batch_event(
-            request_id,
-            "batch_file_failed",
-            batch_context,
-            stage=f"upload_{kind}",
-            file=original_name,
-            reason="client_disconnected",
-        )
         logger.warning("[%s] raw_upload_client_disconnected kind=%s elapsed_seconds=%s", request_id, kind, elapsed_seconds)
         return _json_error(
             "Upload connection dropped before the backend received the full file.",
@@ -2553,16 +2669,18 @@ async def upload_file_raw(request: Request):
         if upload_path.exists():
             upload_path.unlink()
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _log_readable_event(
+            request_id,
+            "❌",
+            "upload_file_failed",
+            file_id=file_id,
+            kind=kind,
+            filename=original_name,
+            elapsed_seconds=elapsed_seconds,
+            **batch_details,
+        )
         _set_request_progress(request_id, "raw_upload_failed", kind=kind, elapsed_seconds=elapsed_seconds)
         request_progress[request_id]["failed"] = True
-        _log_batch_event(
-            request_id,
-            "batch_file_failed",
-            batch_context,
-            stage=f"upload_{kind}",
-            file=original_name,
-            reason="backend_exception",
-        )
         logger.exception("[%s] raw_upload_failed kind=%s elapsed_seconds=%s", request_id, kind, elapsed_seconds)
         return _json_error(
             "Backend failed while receiving the uploaded file.",
@@ -2589,7 +2707,9 @@ async def analyze_uploaded_pair(request: Request):
     """
     request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:8])
     started_at = time.perf_counter()
-    batch_context = _get_batch_request_context(request)
+    batch_details = _read_batch_log_headers(request)
+    thermal_original_name = (request.headers.get("x-thermal-file-name") or "").strip()
+    rgb_original_name = (request.headers.get("x-rgb-file-name") or "").strip()
 
     try:
         payload = await request.json()
@@ -2617,15 +2737,28 @@ async def analyze_uploaded_pair(request: Request):
 
     thermal_uploaded_image_filename, thermal_uploaded_image_path = thermal_file
     rgb_uploaded_image_filename, rgb_uploaded_image_path = rgb_file
+    thermal_log_name = thermal_original_name or thermal_uploaded_image_filename
+    rgb_log_name = rgb_original_name or rgb_uploaded_image_filename
 
+    _log_readable_event(
+        request_id,
+        "🔎",
+        "analyze_pair_started",
+        file_id=file_id,
+        thermal_file=thermal_log_name,
+        rgb_file=rgb_log_name,
+        **batch_details,
+    )
     _log_upload_step(
         request_id,
         "analyze_started",
         file_id=file_id,
         thermal_path=thermal_uploaded_image_filename,
         rgb_path=rgb_uploaded_image_filename,
+        thermal_file=thermal_log_name,
+        rgb_file=rgb_log_name,
+        **batch_details,
     )
-    _log_batch_event(request_id, "batch_pair_started", batch_context, file_id=file_id)
 
     try:
         response = _analyze_saved_pair(
@@ -2637,13 +2770,32 @@ async def analyze_uploaded_pair(request: Request):
             rgb_uploaded_image_filename=rgb_uploaded_image_filename,
             rgb_uploaded_image_path=rgb_uploaded_image_path,
         )
-        _log_batch_event(request_id, "batch_pair_finished", batch_context, file_id=file_id)
+        elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _log_readable_event(
+            request_id,
+            "✅",
+            "analyze_pair_finished",
+            file_id=file_id,
+            thermal_file=thermal_log_name,
+            rgb_file=rgb_log_name,
+            elapsed_seconds=elapsed_seconds,
+            **batch_details,
+        )
         return response
     except Exception:
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
+        _log_readable_event(
+            request_id,
+            "❌",
+            "analyze_pair_failed",
+            file_id=file_id,
+            thermal_file=thermal_log_name,
+            rgb_file=rgb_log_name,
+            elapsed_seconds=elapsed_seconds,
+            **batch_details,
+        )
         _set_request_progress(request_id, "analyze_failed", file_id=file_id, elapsed_seconds=elapsed_seconds)
         request_progress[request_id]["failed"] = True
-        _log_batch_event(request_id, "batch_pair_failed", batch_context, file_id=file_id, reason="backend_exception")
         logger.exception("[%s] analyze_failed file_id=%s elapsed_seconds=%s", request_id, file_id, elapsed_seconds)
         return _json_error(
             "Backend failed while analyzing the uploaded image pair.",

@@ -647,6 +647,23 @@ body::after {
   background: rgba(255, 248, 239, 0.14);
 }
 
+.resultGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.annotatedPanel {
+  display: grid;
+  gap: 12px;
+}
+
+.detailColumn {
+  display: grid;
+  gap: 12px;
+}
+
 .selectedPairLayout {
   display: grid;
   gap: 18px;
@@ -1276,6 +1293,7 @@ body::after {
     padding-inline: 0;
   }
 
+  .resultGrid,
   .selectedPairHeroGrid,
   .comparisonGrid {
     grid-template-columns: 1fr;
