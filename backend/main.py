@@ -493,6 +493,17 @@ def _load_yolo_device() -> str:
 
 
 YOLO_DEVICE = _load_yolo_device()
+
+
+def _is_gpu_device_name(device_name: str) -> bool:
+    """
+    เช็คจากชื่อ device ว่ารอบนี้จะรันแบบ GPU หรือไม่
+    ใช้แยก default ระหว่างเครื่อง local ที่มี GPU กับ Render ที่มีแค่ CPU
+    """
+    normalized = device_name.strip().lower()
+    return normalized.startswith("cuda") or normalized.startswith("mps") or normalized.isdigit()
+
+
 # HOTSPOT_CONFIDENCE = _env_float("HOTSPOT_CONFIDENCE", 0.34)
 HOTSPOT_CONFIDENCE = _env_float("HOTSPOT_CONFIDENCE", 0.34)
 HOTSPOT_IOU = _env_float("HOTSPOT_IOU", 0.7)
@@ -524,9 +535,12 @@ RGB_DETECTION_CROP_MARGIN = _env_int("RGB_DETECTION_CROP_MARGIN", 800)
 
 # [ค่าขนาดภาพสำหรับโมเดล]
 # imgsz แยกของ hotspot / equipment model
-HOTSPOT_IMGSZ = _env_int("HOTSPOT_IMGSZ", 960)
-# เปลี่ยนจาก 640 เป็น 1280 เพื่อให้โมเดล equipment ตรวจจับอุปกรณ์เล็ก ๆ ได้ดีขึ้น
-EQUIPMENT_IMGSZ = _env_int("EQUIPMENT_IMGSZ", 1280)
+DEFAULT_HOTSPOT_IMGSZ = 960 if _is_gpu_device_name(YOLO_DEVICE) else 640
+DEFAULT_EQUIPMENT_IMGSZ = 1280 if _is_gpu_device_name(YOLO_DEVICE) else 640
+HOTSPOT_IMGSZ = _env_int("HOTSPOT_IMGSZ", DEFAULT_HOTSPOT_IMGSZ)
+# เครื่องที่มี GPU ใช้ 1280 เพื่อให้โมเดล equipment ตรวจจับอุปกรณ์เล็ก ๆ ได้ดีขึ้น
+# แต่ถ้า fallback เป็น CPU จะลด default เหลือ 640 เพื่อไม่ให้ Render CPU ช้าจน request หลุด
+EQUIPMENT_IMGSZ = _env_int("EQUIPMENT_IMGSZ", DEFAULT_EQUIPMENT_IMGSZ)
 
 # [ค่าจำนวน threads ของ PyTorch]
 # จำนวน threads ของ PyTorch
