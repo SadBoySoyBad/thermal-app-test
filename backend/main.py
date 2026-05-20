@@ -535,6 +535,8 @@ RGB_DETECTION_CROP_MARGIN = _env_int("RGB_DETECTION_CROP_MARGIN", 800)
 
 # [ค่าขนาดภาพสำหรับโมเดล]
 # imgsz แยกของ hotspot / equipment model
+# ค่าแนะนำเดิมสำหรับเครื่องที่มี GPU คือ hotspot=960 และ equipment=1280 เพราะ detect รายละเอียดเล็ก ๆ ได้ดีกว่า
+# แต่ Render CPU/RAM ต่ำมีโอกาสถูก kill ตอนใช้ภาพใหญ่ จึงลด default เป็น 640/640 เฉพาะตอน fallback เป็น CPU
 DEFAULT_HOTSPOT_IMGSZ = 960 if _is_gpu_device_name(YOLO_DEVICE) else 640
 DEFAULT_EQUIPMENT_IMGSZ = 1280 if _is_gpu_device_name(YOLO_DEVICE) else 640
 HOTSPOT_IMGSZ = _env_int("HOTSPOT_IMGSZ", DEFAULT_HOTSPOT_IMGSZ)
