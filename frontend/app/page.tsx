@@ -56,15 +56,24 @@ type UploadBatchLogContext = {
   totalPairs: number;
   totalFiles: number;
   fileNames: string[];
+  fileStartIndexes: Record<string, number>;
+};
+
+// [เพิ่มใหม่]
+// เก็บช่วงอุณหภูมิที่ผู้ใช้เลือกเองสำหรับภาพ thermal แบบ custom range
+// ถ้าเป็น null แปลว่ายังใช้สีเดิมจากกล้องอยู่
+type DisplayRange = {
+  min: number;
+  max: number;
 };
 
 // เหมือนเดิม: อ่าน backend URL จาก env
 const backendBaseUrl = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 
-// ช่วงสีแบบ fixed range ที่ใช้กับภาพ thermal ชุดที่สอง
-// ภาพนี้ไม่ได้เอาไปใช้กับ model แต่เอาไว้ "แสดงผลให้คนดู" เพื่อให้แต่ละรูปเทียบสีกันได้ง่ายขึ้น
-const FIXED_RANGE_MIN_C = 25;
-const FIXED_RANGE_MAX_C = 40;
+// placeholder ของช่อง custom range
+// ตอนเริ่มต้นจะยังไม่ใส่เลขให้ user เพราะถ้ายังไม่ Apply ระบบจะใช้สีเดิมจากกล้องอยู่
+const DISPLAY_RANGE_MIN_PLACEHOLDER = "Min";
+const DISPLAY_RANGE_MAX_PLACEHOLDER = "Max";
 
 // helper เหมือนเดิม: แปลงวินาที -> mm:ss
 function formatElapsedTime(totalSeconds: number) {
@@ -176,16 +185,60 @@ function buildDownloadFileName(fileName: string, suffix = "", fallbackExtension 
 }
 
 // [เพิ่มใหม่]
+// แปลง path รูปจาก backend ให้เป็น URL ที่ browser โหลดได้จริง
+// backend มักส่งมาเป็น /uploads/xxx.jpg จึงต้องเติม backendBaseUrl ข้างหน้า
+function toBackendImageUrl(rawImagePath: unknown) {
+  if (typeof rawImagePath !== "string" || !rawImagePath.trim()) {
+    return null;
+  }
+
+  const imagePath = rawImagePath.trim();
+  if (imagePath.startsWith("data:") || imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
+    return imagePath;
+  }
+
+  return `${backendBaseUrl}${imagePath}`;
+}
+
+function formatTemperatureRange(minTemperature: number | null | undefined, maxTemperature: number | null | undefined) {
+  if (typeof minTemperature !== "number" || typeof maxTemperature !== "number") {
+    return "range unavailable";
+  }
+
+  return `${minTemperature.toFixed(1)}-${maxTemperature.toFixed(1)} ${DEGREE_C}`;
+}
+
+function isSameDisplayRange(left: DisplayRange | null, minTemperature: number | null, maxTemperature: number | null) {
+  return (
+    left !== null &&
+    typeof minTemperature === "number" &&
+    typeof maxTemperature === "number" &&
+    Math.abs(left.min - minTemperature) < 0.001 &&
+    Math.abs(left.max - maxTemperature) < 0.001
+  );
+}
+
+// [เพิ่มใหม่]
 // สร้างรายการชื่อไฟล์จริงที่ผู้ใช้ upload ในรอบนี้
 // เรียงตามคู่ภาพ: thermal แล้วตามด้วย rgb เพื่อให้ log ไล่อ่านตาม flow ได้ง่าย
 function buildUploadBatchLogContext(batchId: string, pairs: MatchedPair[]): UploadBatchLogContext {
-  const fileNames = pairs.flatMap((pair) => [pair.thermal.name, pair.rgb.name]);
+  const fileNames: string[] = [];
+  const fileStartIndexes: Record<string, number> = {};
+
+  for (const pair of pairs) {
+    fileStartIndexes[pair.id] = fileNames.length + 1;
+    fileNames.push(pair.thermal.name);
+    if (pair.rgb) {
+      fileNames.push(pair.rgb.name);
+    }
+  }
 
   return {
     batchId,
     totalPairs: pairs.length,
     totalFiles: fileNames.length,
     fileNames,
+    fileStartIndexes,
   };
 }
 
@@ -290,8 +343,18 @@ export default function Home() {
   const [roiApplyingPairId, setRoiApplyingPairId] = useState<string | null>(null);
 
   // [เพิ่มใหม่]
+  // state กลุ่มนี้ใช้คุมช่วงสี thermal ที่ผู้ใช้กำหนดเอง
+  // activeDisplayRange = range ที่ถูก apply แล้วและใช้กับผลลัพธ์ทั้งชุด
+  const [displayRangeMinInput, setDisplayRangeMinInput] = useState("");
+  const [displayRangeMaxInput, setDisplayRangeMaxInput] = useState("");
+  const [activeDisplayRange, setActiveDisplayRange] = useState<DisplayRange | null>(null);
+  const [isApplyingDisplayRange, setIsApplyingDisplayRange] = useState(false);
+
+  // [เพิ่มใหม่]
   // คู่ภาพที่กำลังถูกเลือกดูอยู่
   const selectedPair = results[selectedPairIndex] ?? null;
+  const pairedJobCount = matchedPairs.filter((pair) => pair.analysisMode === "paired").length;
+  const thermalOnlyJobCount = matchedPairs.filter((pair) => pair.analysisMode === "thermal_only").length;
 
   // [เพิ่มใหม่]
   // ป้องกัน index ของ hotspot ไม่ให้เกินจำนวนจริง
@@ -311,7 +374,32 @@ export default function Home() {
   const selectedCameraImage = selectedPair?.annotatedImageCamera ?? selectedPair?.annotatedImage ?? null;
   const selectedFixedRangeImage = selectedPair?.annotatedImageFixedRange ?? null;
   const selectedThermalDownloadImage = selectedPair?.thermalImage ?? null;
+  const selectedRgbImage = selectedPair?.rgbImage ?? null;
+  const selectedRgbDisplayImage = selectedPair?.equipmentDetectionImage ?? selectedRgbImage;
   const selectedFixedRangeDownloadImage = selectedPair?.fixedRangeImage ?? null;
+  const selectedFixedRangeMatchesActive = selectedPair
+    ? isSameDisplayRange(activeDisplayRange, selectedPair.fixedRangeMinTemperature, selectedPair.fixedRangeMaxTemperature)
+    : false;
+  const selectedDisplayRangeImage =
+    activeDisplayRange === null ? selectedCameraImage : selectedFixedRangeMatchesActive ? selectedFixedRangeImage : null;
+  const selectedDisplayRangeDownloadImage =
+    activeDisplayRange === null
+      ? selectedThermalDownloadImage
+      : selectedFixedRangeMatchesActive
+        ? selectedFixedRangeDownloadImage
+        : null;
+  const selectedImageTemperatureRangeLabel = formatTemperatureRange(
+    selectedPair?.thermalImageMinTemperature,
+    selectedPair?.thermalImageMaxTemperature,
+  );
+  const selectedDisplayRangeTitle =
+    activeDisplayRange === null
+      ? "Camera colors"
+      : `${activeDisplayRange.min.toFixed(1)}-${activeDisplayRange.max.toFixed(1)} ${DEGREE_C} range`;
+  const selectedDisplayRangeHint =
+    activeDisplayRange === null
+      ? `Using the camera color scale. This image temperature range is ${selectedImageTemperatureRangeLabel}.`
+      : "Using the selected display range across the uploaded set.";
   const liveRoiDraft =
     selectedPair && roiDragState && roiDragState.pairId === selectedPair.id
       ? createNormalizedRoi(roiDragState.start, roiDragState.current)
@@ -411,6 +499,8 @@ export default function Home() {
     setPendingReferenceRois({});
     setRoiDragState(null);
     setRoiApplyingPairId(null);
+    setActiveDisplayRange(null);
+    setIsApplyingDisplayRange(false);
   }
 
   /*
@@ -721,6 +811,135 @@ export default function Home() {
     showMessage(`Reset ${selectedPair.displayName} back to automatic reference.`);
   }
 
+  // [เพิ่มใหม่]
+  // ให้ผู้ใช้กำหนด min/max ของสี thermal เอง แล้วใช้ range เดียวกันกับผลลัพธ์ทั้งชุด
+  // backend จะ render รูป fixed-range ใหม่จากไฟล์เดิม โดยไม่ต้อง rerun model
+  async function applyDisplayRangeToAllResults() {
+    const trimmedMinInput = displayRangeMinInput.trim();
+    const trimmedMaxInput = displayRangeMaxInput.trim();
+
+    if (!trimmedMinInput || !trimmedMaxInput) {
+      showMessage("Enter both min and max display range values.", "warning");
+      return;
+    }
+
+    const minTemperature = Number(trimmedMinInput);
+    const maxTemperature = Number(trimmedMaxInput);
+
+    if (!Number.isFinite(minTemperature) || !Number.isFinite(maxTemperature)) {
+      showMessage("Display range must be valid numbers.", "warning");
+      return;
+    }
+
+    if (maxTemperature <= minTemperature) {
+      showMessage("Display range max must be greater than min.", "warning");
+      return;
+    }
+
+    const eligibleResults = results.filter(
+      (result) => result.fileId.trim() && result.thermalAvailable !== false && result.thermalMode === "absolute",
+    );
+    if (eligibleResults.length === 0) {
+      showMessage("No analyzed image has absolute thermal data for custom display range.", "warning");
+      return;
+    }
+
+    const nextDisplayRange = { min: minTemperature, max: maxTemperature };
+    const rangeRequestId = createRequestId();
+    setIsApplyingDisplayRange(true);
+    setRequestId(rangeRequestId);
+
+    try {
+      const updatedResultsById = new Map<string, AnalysisResult>();
+
+      for (const result of eligibleResults) {
+        const rangeResponse = await fetch(`${backendBaseUrl}/display-range`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-request-id": createRequestId(),
+          },
+          body: JSON.stringify({
+            file_id: result.fileId,
+            min_temp: minTemperature,
+            max_temp: maxTemperature,
+            detections: result.detections,
+          }),
+        });
+
+        const responseData = await rangeResponse.json().catch(() => null);
+        const headerRequestId = rangeResponse.headers.get("x-request-id") ?? "";
+        const responseRequestId = getResponseRequestId(responseData, headerRequestId || rangeRequestId);
+
+        if (!rangeResponse.ok || !isRecord(responseData) || responseData.success !== true) {
+          const fallbackMessage = rangeResponse.ok
+            ? "Failed to render custom display range."
+            : `Backend returned HTTP ${rangeResponse.status} while rendering custom display range.`;
+
+          throw {
+            requestId: responseRequestId,
+            message:
+              isRecord(responseData) && typeof responseData.message === "string" && responseData.message.trim()
+                ? responseData.message
+                : fallbackMessage,
+          };
+        }
+
+        const nextAnnotatedImageFixedRange = toBackendImageUrl(responseData.annotated_image_fixed_range);
+        const nextFixedRangeImage = toBackendImageUrl(responseData.fixed_range_image);
+
+        if (!nextAnnotatedImageFixedRange || !nextFixedRangeImage) {
+          throw {
+            requestId: responseRequestId,
+            message: "Backend returned an incomplete display range response.",
+          };
+        }
+
+        updatedResultsById.set(result.id, {
+          ...result,
+          annotatedImageFixedRange: nextAnnotatedImageFixedRange,
+          fixedRangeImage: nextFixedRangeImage,
+          fixedRangeMinTemperature: minTemperature,
+          fixedRangeMaxTemperature: maxTemperature,
+          thermalImageMinTemperature:
+            typeof responseData.thermal_image_min_temperature === "number"
+              ? responseData.thermal_image_min_temperature
+              : result.thermalImageMinTemperature,
+          thermalImageMaxTemperature:
+            typeof responseData.thermal_image_max_temperature === "number"
+              ? responseData.thermal_image_max_temperature
+              : result.thermalImageMaxTemperature,
+          requestId: responseRequestId,
+        });
+      }
+
+      setResults((currentResults) => currentResults.map((result) => updatedResultsById.get(result.id) ?? result));
+      setActiveDisplayRange(nextDisplayRange);
+      showMessage(
+        `Applied ${minTemperature.toFixed(1)}-${maxTemperature.toFixed(1)} ${DEGREE_C} display range to ${updatedResultsById.size} images.`,
+      );
+    } catch (error) {
+      const failedRequestId = isRecord(error) && typeof error.requestId === "string" ? error.requestId : "";
+      const failedMessage =
+        isRecord(error) && typeof error.message === "string" && error.message.trim()
+          ? error.message
+          : "Cannot render custom display range right now.";
+
+      if (failedRequestId) {
+        setRequestId(failedRequestId);
+      }
+
+      showMessage(failedMessage, "warning");
+    } finally {
+      setIsApplyingDisplayRange(false);
+    }
+  }
+
+  function resetDisplayRangeToCameraColors() {
+    setActiveDisplayRange(null);
+    showMessage("Using camera colors again. Custom display range is disabled for this set.");
+  }
+
   /*
     ตอนนี้เลือกไฟล์ทีเดียวได้หลายภาพ
     แล้วใช้ helper จับคู่ thermal/rgb ตามเลขในชื่อไฟล์
@@ -746,16 +965,16 @@ export default function Home() {
     setPairingIssues(issues);
 
     if (pairs.length === 0) {
-      showMessage("No thermal/RGB pairs could be matched from the selected files.", "warning");
+      showMessage("No thermal image could be prepared for analysis from the selected files.", "warning");
       return;
     }
 
     if (issues.length > 0) {
-      showMessage(`Matched ${pairs.length} pairs. Some files still need clearer thermal/RGB names.`, "warning");
+      showMessage(`Prepared ${pairs.length} analysis jobs. Some files still need clearer thermal/RGB names.`, "warning");
       return;
     }
 
-    showMessage(`Matched ${pairs.length} pairs and ready to analyze.`);
+    showMessage(`Prepared ${pairs.length} analysis jobs and ready to analyze.`);
   }
 
   /*
@@ -776,7 +995,7 @@ export default function Home() {
     }
 
     const uploadRequestId = createRequestId();
-    const uploadFileIndex = pairIndex * 2 + (kind === "thermal" ? 1 : 2);
+    const uploadFileIndex = (batchContext.fileStartIndexes[pair.id] ?? pairIndex + 1) + (kind === "rgb" ? 1 : 0);
     const uploadHeaders: Record<string, string> = {
       // โค้ดใหม่ส่งไฟล์แบบ raw body พร้อม header metadata
       "Content-Type": file.type || "application/octet-stream",
@@ -789,7 +1008,7 @@ export default function Home() {
       "x-batch-pair-index": String(pairIndex + 1),
       "x-batch-pair-label": pair.displayName,
       "x-thermal-file-name": pair.thermal.name,
-      "x-rgb-file-name": pair.rgb.name,
+      "x-rgb-file-name": pair.rgb?.name ?? "",
     };
 
     const uploadResponse = await fetch(`${backendBaseUrl}/upload-file?${params.toString()}`, {
@@ -833,11 +1052,26 @@ export default function Home() {
     const thermalUpload = await uploadSingleFile(pair.thermal, "thermal", undefined, batchContext, pair, pairIndex);
     setRequestId(thermalUpload.requestId);
 
-    setProgressMessage("Uploading RGB image...");
-    const rgbUpload = await uploadSingleFile(pair.rgb, "rgb", thermalUpload.fileId, batchContext, pair, pairIndex);
-    setRequestId(rgbUpload.requestId);
+    let analyzeFileId = thermalUpload.fileId;
+    if (pair.analysisMode === "paired") {
+      if (!pair.rgb) {
+        throw {
+          requestId: thermalUpload.requestId,
+          message: "RGB file is missing for this paired analysis job.",
+        };
+      }
 
-    setProgressMessage("Running hotspot and equipment analysis...");
+      setProgressMessage("Uploading RGB image...");
+      const rgbUpload = await uploadSingleFile(pair.rgb, "rgb", thermalUpload.fileId, batchContext, pair, pairIndex);
+      setRequestId(rgbUpload.requestId);
+      analyzeFileId = rgbUpload.fileId;
+    }
+
+    setProgressMessage(
+      pair.analysisMode === "thermal_only"
+        ? "Running thermal hotspot analysis..."
+        : "Running hotspot and equipment analysis...",
+    );
     const analyzeRequestId = createRequestId();
     setRequestId(analyzeRequestId);
 
@@ -852,9 +1086,9 @@ export default function Home() {
         "x-batch-pair-index": String(pairIndex + 1),
         "x-batch-pair-label": pair.displayName,
         "x-thermal-file-name": pair.thermal.name,
-        "x-rgb-file-name": pair.rgb.name,
+        "x-rgb-file-name": pair.rgb?.name ?? "",
       },
-      body: JSON.stringify({ file_id: rgbUpload.fileId }),
+      body: JSON.stringify({ file_id: analyzeFileId, analysis_mode: pair.analysisMode }),
     });
 
     const responseData = await analyzeResponse.json().catch(() => null);
@@ -898,7 +1132,7 @@ export default function Home() {
 
   async function handleUpload() {
     if (matchedPairs.length === 0) {
-      showMessage("Please choose image files that can be matched into thermal/RGB pairs.", "warning");
+      showMessage("Please choose thermal images, with optional matching RGB images.", "warning");
       return;
     }
 
@@ -960,14 +1194,14 @@ export default function Home() {
         }
       }
 
-      const summaryParts = [`Analyzed ${nextResults.length}/${matchedPairs.length} matched pairs.`];
+      const summaryParts = [`Analyzed ${nextResults.length}/${matchedPairs.length} analysis jobs.`];
 
       if (pairingIssues.length > 0) {
         summaryParts.push(`${pairingIssues.length} groups still need clearer file names.`);
       }
 
       if (nextFailedPairs.length > 0) {
-        summaryParts.push(`${nextFailedPairs.length} pairs failed.`);
+        summaryParts.push(`${nextFailedPairs.length} jobs failed.`);
       }
 
       showMessage(
@@ -1029,14 +1263,14 @@ export default function Home() {
           <h1>Thermal Image GPS Viewer</h1>
 
           <p className="subtle">
-            Upload the thermal image with GPS metadata and its matching RGB image to identify the hotspot equipment.
+            Upload thermal images with optional matching RGB images. Thermal-only uploads still detect hotspots and calculate temperature priority.
           </p>
         </header>
 
         {/* ส่วน upload ใหม่: เลือกหลายไฟล์จาก input เดียว */}
         <div className="uploadStack">
           <div className="uploadRow">
-            <span className="uploadLabel">Thermal + RGB images</span>
+            <span className="uploadLabel">Thermal images + optional RGB</span>
             <input
               id="batch-files"
               className="fileInput"
@@ -1065,7 +1299,7 @@ export default function Home() {
             }}
             disabled={loading || matchedPairs.length === 0}
           >
-            {loading ? "Analyzing..." : "Analyze All Pairs"}
+            {loading ? "Analyzing..." : "Analyze Images"}
           </button>
         </div>
 
@@ -1075,7 +1309,8 @@ export default function Home() {
         {selectedFiles.length > 0 && (
           <div className="summaryBar">
             <span>{selectedFiles.length} uploaded images</span>
-            <span>{matchedPairs.length} matched pairs</span>
+            <span>{pairedJobCount} matched pairs</span>
+            <span>{thermalOnlyJobCount} thermal-only</span>
             <span>{pairingIssues.length} groups need attention</span>
           </div>
         )}
@@ -1088,8 +1323,11 @@ export default function Home() {
             {matchedPairs.map((pair) => (
               <article key={pair.id} className="pairChip">
                 <p className="pairChipTitle">{pair.displayName}</p>
+                <p className="pairChipMeta">
+                  Mode: {pair.analysisMode === "thermal_only" ? "Thermal only" : "Thermal + RGB"}
+                </p>
                 <p className="pairChipMeta">Thermal: {pair.thermal.name}</p>
-                <p className="pairChipMeta">RGB: {pair.rgb.name}</p>
+                {pair.rgb ? <p className="pairChipMeta">RGB: {pair.rgb.name}</p> : null}
               </article>
             ))}
           </div>
@@ -1116,7 +1354,7 @@ export default function Home() {
         */}
         {failedPairs.length > 0 && (
           <div className="warningPanel">
-            <p className="warningTitle">Pairs that failed during analysis</p>
+            <p className="warningTitle">Analysis jobs that failed</p>
             <ul className="warningList">
               {failedPairs.map((failedPair) => (
                 <li key={failedPair.id}>
@@ -1132,7 +1370,7 @@ export default function Home() {
         */}
         {loading && activePairTotal > 0 && (
           <p className="status">
-            Pair {activePairIndex} of {activePairTotal}: {activePairLabel}
+            Job {activePairIndex} of {activePairTotal}: {activePairLabel}
           </p>
         )}
 
@@ -1198,109 +1436,161 @@ export default function Home() {
           {selectedPair && (
             <div className="selectedPairLayout">
               {/* แถวบนของผลลัพธ์
-                 ซ้ายคือภาพ thermal สีเดิมจากกล้องที่วาด hotspot แล้ว
+                 ซ้ายคือภาพ thermal สีเดิมจากกล้องที่วาด hotspot แล้ว และภาพ RGB ถ้ามี
                  ขวาคือข้อมูลของรูปนี้และ hotspot ที่เลือกอยู่
               */}
               <div className="selectedPairHeroGrid">
-                <article className="comparisonCard">
-                  <div className="comparisonCardHeader">
-                    <div className="comparisonCardCopy">
-                      <p className="comparisonCardTitle">Thermal camera image</p>
-                      <p className="comparisonCardHint">Thermal image from the camera with hotspot overlays.</p>
-                    </div>
-                  </div>
-
-                  {selectedCameraImage ? (
-                    <div className={`annotatedImageFrame ${canShowReferenceRoiUi ? "annotatedImageFrameInteractive" : ""}`}>
-                      <Image
-                        src={selectedCameraImage}
-                        alt={`Thermal camera result for ${selectedPair.displayName}`}
-                        width={1600}
-                        height={900}
-                        unoptimized
-                        className="annotatedImage"
-                      />
-                      {canShowReferenceRoiUi && (
-                        <div
-                          className={`annotatedRoiOverlay ${isApplyingReferenceRoi ? "disabled" : ""}`}
-                          onPointerDown={handleRoiPointerDown}
-                          onPointerMove={handleRoiPointerMove}
-                          onPointerUp={finishRoiPointer}
-                          onPointerCancel={handleRoiPointerCancel}
-                        >
-                          {activeReferenceRoi && (
-                            <div className="annotatedRoiBox" style={getRoiStyle(activeReferenceRoi)}>
-                              <span className="annotatedRoiLabel">Reference ROI</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="comparisonPlaceholder">Thermal camera image is unavailable for this pair.</div>
-                  )}
-
-                  {/* [เพิ่มใหม่ล่าสุด]
-                     แถบเครื่องมือ ROI อยู่ใต้รูป thermal camera ที่ใช้ลากกรอบจริง
-                     ผู้ใช้จะเห็นรูป ลากกรอบ แล้วกด Apply ROI ต่อกันในจุดเดียว
-                  */}
-                  {canShowReferenceRoiUi && (
-                    <div className="roiToolbar">
-                      <div className="roiToolbarHeader">
-                        <div className="roiToolbarCopy">
-                          <p className="roiToolbarTitle">Reference ROI</p>
-                          <p className="roiToolbarHint">
-                            {activeReferenceRoi
-                              ? "Drag a new box on the thermal camera image if you want to replace the current selection, then click Apply ROI."
-                              : "Draw a box on the thermal camera image, then click Apply ROI."}
-                          </p>
-                          {!canApplyReferenceRoiBackend && (
-                            <p className="roiToolbarWarning">
-                              ROI recalculation is not ready because the backend is still running an older version.
-                              Restart the backend, then analyze again.
-                            </p>
-                          )}
-                        </div>
-                        <div className="roiActionRow">
-                          <button
-                            className="roiButton"
-                            type="button"
-                            onClick={() => {
-                              void applyReferenceRoi();
-                            }}
-                            disabled={!canApplyReferenceRoi}
-                          >
-                            {isApplyingReferenceRoi ? "Applying ROI..." : "Apply ROI"}
-                          </button>
-                          <button
-                            className="roiButton secondary"
-                            type="button"
-                            onClick={resetReferenceRoi}
-                            disabled={!canResetReferenceRoi}
-                          >
-                            Reset to Auto
-                          </button>
-                        </div>
+                <div className="selectedPairMediaStack">
+                  <article className="comparisonCard">
+                    <div className="comparisonCardHeader">
+                      <div className="comparisonCardCopy">
+                        <p className="comparisonCardTitle">Thermal camera image</p>
+                        <p className="comparisonCardHint">Thermal image from the camera with hotspot overlays.</p>
                       </div>
                     </div>
-                  )}
 
-                  <div className="comparisonCardActions">
-                    <button
-                      className="imageDownloadButton"
-                      type="button"
-                      onClick={() =>
-                        void downloadImageAsset(
-                          selectedThermalDownloadImage,
-                          buildDownloadFileName(selectedPair.thermalFileName),
-                        )
-                      }
-                      disabled={!selectedThermalDownloadImage}
-                    >
-                      Download image
-                    </button>
-                  </div>
-                </article>
+                    {selectedCameraImage ? (
+                      <div
+                        className={`annotatedImageFrame ${canShowReferenceRoiUi ? "annotatedImageFrameInteractive" : ""}`}
+                      >
+                        <Image
+                          src={selectedCameraImage}
+                          alt={`Thermal camera result for ${selectedPair.displayName}`}
+                          width={1600}
+                          height={900}
+                          unoptimized
+                          className="annotatedImage"
+                        />
+                        {canShowReferenceRoiUi && (
+                          <div
+                            className={`annotatedRoiOverlay ${isApplyingReferenceRoi ? "disabled" : ""}`}
+                            onPointerDown={handleRoiPointerDown}
+                            onPointerMove={handleRoiPointerMove}
+                            onPointerUp={finishRoiPointer}
+                            onPointerCancel={handleRoiPointerCancel}
+                          >
+                            {activeReferenceRoi && (
+                              <div className="annotatedRoiBox" style={getRoiStyle(activeReferenceRoi)}>
+                                <span className="annotatedRoiLabel">Reference ROI</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="comparisonPlaceholder">Thermal camera image is unavailable for this pair.</div>
+                    )}
+
+                    {/* [เพิ่มใหม่ล่าสุด]
+                       แถบเครื่องมือ ROI อยู่ใต้รูป thermal camera ที่ใช้ลากกรอบจริง
+                       ผู้ใช้จะเห็นรูป ลากกรอบ แล้วกด Apply ROI ต่อกันในจุดเดียว
+                    */}
+                    {canShowReferenceRoiUi && (
+                      <div className="roiToolbar">
+                        <div className="roiToolbarHeader">
+                          <div className="roiToolbarCopy">
+                            <p className="roiToolbarTitle">Reference ROI</p>
+                            <p className="roiToolbarHint">
+                              {activeReferenceRoi
+                                ? "Drag a new box on the thermal camera image if you want to replace the current selection, then click Apply ROI."
+                                : "Draw a box on the thermal camera image, then click Apply ROI."}
+                            </p>
+                            {!canApplyReferenceRoiBackend && (
+                              <p className="roiToolbarWarning">
+                                ROI recalculation is not ready because the backend is still running an older version.
+                                Restart the backend, then analyze again.
+                              </p>
+                            )}
+                          </div>
+                          <div className="roiActionRow">
+                            <button
+                              className="roiButton"
+                              type="button"
+                              onClick={() => {
+                                void applyReferenceRoi();
+                              }}
+                              disabled={!canApplyReferenceRoi}
+                            >
+                              {isApplyingReferenceRoi ? "Applying ROI..." : "Apply ROI"}
+                            </button>
+                            <button
+                              className="roiButton secondary"
+                              type="button"
+                              onClick={resetReferenceRoi}
+                              disabled={!canResetReferenceRoi}
+                            >
+                              Reset to Auto
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="comparisonCardActions">
+                      <button
+                        className="imageDownloadButton"
+                        type="button"
+                        onClick={() =>
+                          void downloadImageAsset(
+                            selectedThermalDownloadImage,
+                            buildDownloadFileName(selectedPair.thermalFileName),
+                          )
+                        }
+                        disabled={!selectedThermalDownloadImage}
+                      >
+                        Download image
+                      </button>
+                    </div>
+                  </article>
+
+                  {/* [เพิ่มใหม่]
+                     แสดงภาพ RGB ไว้ใต้ภาพ thermal หลัก เพื่อให้เห็นภาพคู่ของงานเดียวกันทันที
+                     ถ้าเป็น thermal-only จะขึ้นข้อความแทน เพราะงานนั้นไม่มี RGB
+                  */}
+                  <article className="comparisonCard">
+                    <div className="comparisonCardHeader">
+                      <div className="comparisonCardCopy">
+                        <p className="comparisonCardTitle">RGB image</p>
+                        <p className="comparisonCardHint">
+                          Cropped RGB model input before matching, with equipment boxes and detected equipment labels.
+                        </p>
+                      </div>
+                    </div>
+
+                    {selectedRgbDisplayImage ? (
+                      <div className="annotatedImageFrame">
+                        <Image
+                          src={selectedRgbDisplayImage}
+                          alt={`RGB detection image for ${selectedPair.displayName}`}
+                          width={1600}
+                          height={1200}
+                          unoptimized
+                          className="annotatedImage"
+                        />
+                      </div>
+                    ) : (
+                      <div className="comparisonPlaceholder">
+                        No RGB image was uploaded for this thermal-only analysis.
+                      </div>
+                    )}
+
+                    <div className="comparisonCardActions">
+                      <button
+                        className="imageDownloadButton"
+                        type="button"
+                        onClick={() =>
+                          void downloadImageAsset(
+                            selectedRgbImage,
+                            buildDownloadFileName(selectedPair.rgbFileName ?? "rgb-image.jpg"),
+                          )
+                        }
+                        disabled={!selectedRgbImage}
+                      >
+                        Download image
+                      </button>
+                    </div>
+                  </article>
+                </div>
 
                 {/* กล่องข้อมูลด้านขวา
                    รวม metadata ของรูป, รายการ hotspot, และรายละเอียด hotspot ที่เลือกอยู่
@@ -1310,8 +1600,11 @@ export default function Home() {
                     <h3 className="detailTitle">
                       {selectedPair.displayName} ({selectedPairIndex + 1}/{results.length})
                     </h3>
+                    <p className="detailLine">
+                      Mode: {selectedPair.analysisMode === "thermal_only" ? "Thermal only" : "Thermal + RGB"}
+                    </p>
                     <p className="detailLine">Thermal: {selectedPair.thermalFileName}</p>
-                    <p className="detailLine">RGB: {selectedPair.rgbFileName}</p>
+                    {selectedPair.rgbFileName && <p className="detailLine">RGB: {selectedPair.rgbFileName}</p>}
                     <p className="detailLine">Request ID: {selectedPair.requestId}</p>
                     <p className="detailLine">
                       GPS:{" "}
@@ -1347,7 +1640,12 @@ export default function Home() {
                     <h3 className="detailTitle">Selected hotspot detail</h3>
                     {selectedDetection ? (
                       <div className="detailStack">
-                        <p className="detailLine">Equipment: {getEquipmentLabel(selectedDetection)}</p>
+                        <p className="detailLine">
+                          Equipment:{" "}
+                          {selectedPair.analysisMode === "thermal_only"
+                            ? "Not matched (thermal-only)"
+                            : getEquipmentLabel(selectedDetection)}
+                        </p>
                         <p className="detailLine">Temperature: {getTemperatureDetail(selectedDetection)}</p>
                         {typeof selectedDetection.reference_temp === "number" && (
                           <p className="detailLine">
@@ -1360,12 +1658,16 @@ export default function Home() {
                             Rise above reference: {selectedDetection.delta_above_reference.toFixed(1)} {DEGREE_C}
                           </p>
                         )}
-                        <p className="detailLine">
-                          Match: {selectedDetection.match_method ?? "unknown"}
-                          {typeof selectedDetection.match_distance === "number"
-                            ? ` (${selectedDetection.match_distance.toFixed(1)} px)`
-                            : ""}
-                        </p>
+                        {selectedPair.analysisMode === "thermal_only" ? (
+                          <p className="detailLine">Match: Skipped because no RGB image was uploaded.</p>
+                        ) : (
+                          <p className="detailLine">
+                            Match: {selectedDetection.match_method ?? "unknown"}
+                            {typeof selectedDetection.match_distance === "number"
+                              ? ` (${selectedDetection.match_distance.toFixed(1)} px)`
+                              : ""}
+                          </p>
+                        )}
                         <p className="detailLine">Priority: {selectedDetection.priority ?? "Not rated"}</p>
                         <p className="detailLine">
                           Action: {selectedDetection.action_required ?? "No action suggested"}
@@ -1431,21 +1733,16 @@ export default function Home() {
                 <article className="comparisonCard">
                   <div className="comparisonCardHeader">
                     <div className="comparisonCardCopy">
-                      <p className="comparisonCardTitle">
-                        {FIXED_RANGE_MIN_C}-{FIXED_RANGE_MAX_C}
-                        {DEGREE_C} range
-                      </p>
-                      <p className="comparisonCardHint">
-                        Fixed display scale for direct cross-image temperature comparison.
-                      </p>
+                      <p className="comparisonCardTitle">{selectedDisplayRangeTitle}</p>
+                      <p className="comparisonCardHint">{selectedDisplayRangeHint}</p>
                     </div>
                   </div>
 
-                  {selectedFixedRangeImage ? (
+                  {selectedDisplayRangeImage ? (
                     <div className="annotatedImageFrame">
                       <Image
-                        src={selectedFixedRangeImage}
-                        alt={`Fixed-range thermal result for ${selectedPair.displayName}`}
+                        src={selectedDisplayRangeImage}
+                        alt={`${selectedDisplayRangeTitle} thermal result for ${selectedPair.displayName}`}
                         width={1600}
                         height={900}
                         unoptimized
@@ -1454,11 +1751,64 @@ export default function Home() {
                     </div>
                   ) : (
                     <div className="comparisonPlaceholder warning">
-                      Fixed {FIXED_RANGE_MIN_C}-{FIXED_RANGE_MAX_C}
-                      {DEGREE_C} display is unavailable for this pair because absolute temperature data could not be
-                      extracted.
+                      {activeDisplayRange === null
+                        ? "Camera color image is unavailable for this pair."
+                        : `Custom ${activeDisplayRange.min.toFixed(1)}-${activeDisplayRange.max.toFixed(
+                            1,
+                          )} ${DEGREE_C} display is unavailable for this pair. Absolute temperature data may be missing or the custom range has not finished rendering.`}
                     </div>
                   )}
+
+                  {/* [เพิ่มใหม่]
+                     ให้ผู้ใช้กำหนดช่วงสีของภาพ thermal เอง
+                     วางไว้ใต้รูปเพื่อให้รูปสองช่องล่างเริ่มแสดงในระดับเดียวกัน
+                  */}
+                  <div className="displayRangeControlGrid">
+                    <label className="displayRangeField">
+                      <span>Min {DEGREE_C}</span>
+                      <input
+                        className="displayRangeInput"
+                        type="number"
+                        inputMode="decimal"
+                        step="0.1"
+                        placeholder={DISPLAY_RANGE_MIN_PLACEHOLDER}
+                        value={displayRangeMinInput}
+                        onChange={(event) => setDisplayRangeMinInput(event.target.value)}
+                        disabled={isApplyingDisplayRange}
+                      />
+                    </label>
+                    <label className="displayRangeField">
+                      <span>Max {DEGREE_C}</span>
+                      <input
+                        className="displayRangeInput"
+                        type="number"
+                        inputMode="decimal"
+                        step="0.1"
+                        placeholder={DISPLAY_RANGE_MAX_PLACEHOLDER}
+                        value={displayRangeMaxInput}
+                        onChange={(event) => setDisplayRangeMaxInput(event.target.value)}
+                        disabled={isApplyingDisplayRange}
+                      />
+                    </label>
+                    <button
+                      className="imageDownloadButton"
+                      type="button"
+                      onClick={() => {
+                        void applyDisplayRangeToAllResults();
+                      }}
+                      disabled={isApplyingDisplayRange || results.length === 0}
+                    >
+                      {isApplyingDisplayRange ? "Applying..." : "Apply range"}
+                    </button>
+                    <button
+                      className="imageDownloadButton"
+                      type="button"
+                      onClick={resetDisplayRangeToCameraColors}
+                      disabled={activeDisplayRange === null || isApplyingDisplayRange}
+                    >
+                      Use camera colors
+                    </button>
+                  </div>
 
                   <div className="comparisonCardActions">
                     <button
@@ -1466,11 +1816,16 @@ export default function Home() {
                       type="button"
                       onClick={() =>
                         void downloadImageAsset(
-                          selectedFixedRangeDownloadImage,
-                          buildDownloadFileName(selectedPair.thermalFileName, "_fixed-range"),
+                          selectedDisplayRangeDownloadImage,
+                          buildDownloadFileName(
+                            selectedPair.thermalFileName,
+                            activeDisplayRange === null
+                              ? ""
+                              : `_${activeDisplayRange.min.toFixed(1)}-${activeDisplayRange.max.toFixed(1)}C-range`,
+                          ),
                         )
                       }
-                      disabled={!selectedFixedRangeDownloadImage}
+                      disabled={!selectedDisplayRangeDownloadImage}
                     >
                       Download image
                     </button>
@@ -1538,6 +1893,9 @@ export default function Home() {
               <p className="mapSummaryLine">Hotspots: {selectedMapResult.detections.length}</p>
 
               <div className="mapSummaryList">
+                {selectedMapResult.detections.length === 0 && (
+                  <p className="mapSummaryLine">No hotspot detected by the model.</p>
+                )}
                 {selectedMapResult.detections.map((detection, index) => (
                   <div key={`${selectedMapResult.id}-${index}`} className="mapSummaryHotspot">
                     <p className="mapSummaryLine">

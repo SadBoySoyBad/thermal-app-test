@@ -104,6 +104,9 @@ function getPriorityClass(priority: string | null) {
   if (normalized.includes("priority 3")) {
     return "mapMarkerP3";
   }
+  if (normalized.includes("priority 4")) {
+    return "mapMarkerP4";
+  }
 
   // ถ้าไม่มี priority ชัดเจน ใช้ style ปกติ
   return "mapMarkerDefault";
@@ -122,6 +125,9 @@ function getPopupPriorityClass(priority: string | null) {
   }
   if (normalized.includes("priority 3")) {
     return "mapPopupPriority mapPopupPriorityP3";
+  }
+  if (normalized.includes("priority 4")) {
+    return "mapPopupPriority mapPopupPriorityP4";
   }
 
   return "mapPopupPriority mapPopupPriorityDefault";
@@ -230,9 +236,11 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
   // ถ้าไม่มีหมุดเลย หรือไม่มี marker ที่เลือก
   // หรือ marker ที่เลือกไม่มี hotspot
   // ก็ไม่ render แผนที่ และแสดงข้อความแทน
-  if (markers.length === 0 || !selectedMarker || selectedMarker.hotspots.length === 0) {
-    return <div className="mapPlaceholder">No hotspot with GPS is available for the map yet.</div>;
+  if (markers.length === 0 || !selectedMarker) {
+    return <div className="mapPlaceholder">No GPS location is available for the map yet.</div>;
   }
+
+  const selectedMarkerHasHotspots = selectedMarker.hotspots.length > 0;
 
   // [เพิ่มใหม่ล่าสุด] เดิม logic นี้ดูจากตัวเลข hotspot อย่างเดียว
   // เวอร์ชันล่าสุดจะเช็กก่อนว่า hotspot ที่จำไว้นั้นเป็นของ marker ตัวที่กำลังเปิดอยู่จริงไหม
@@ -241,20 +249,22 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
   // ภาษาคนทั่วไป: เวลาเปลี่ยนไปกดอีกหมุดหนึ่ง ระบบจะไม่เผลอเอาตำแหน่ง hotspot ของหมุดเก่ามาปนกับหมุดใหม่
   // ป้องกันไม่ให้ index หลุดเกินจำนวน hotspot จริง
   const activeCompactHotspotIndex =
-    compactSelection.markerId === selectedMarker.id && isCompactPopup
+    selectedMarkerHasHotspots && compactSelection.markerId === selectedMarker.id && isCompactPopup
       ? Math.min(compactSelection.hotspotIndex, selectedMarker.hotspots.length - 1)
       : 0;
 
   // ถ้าเป็น compact popup จะแสดงทีละ hotspot
   // ถ้าไม่ compact จะแสดง hotspot ทุกตัวใน popup เดียว
-  const visibleHotspots = isCompactPopup
-    ? [
-        {
-          hotspot: selectedMarker.hotspots[activeCompactHotspotIndex],
-          index: activeCompactHotspotIndex,
-        },
-      ]
-    : selectedMarker.hotspots.map((hotspot, index) => ({ hotspot, index }));
+  const visibleHotspots = !selectedMarkerHasHotspots
+    ? []
+    : isCompactPopup
+      ? [
+          {
+            hotspot: selectedMarker.hotspots[activeCompactHotspotIndex],
+            index: activeCompactHotspotIndex,
+          },
+        ]
+      : selectedMarker.hotspots.map((hotspot, index) => ({ hotspot, index }));
 
   // รวม props ของ Popup ไว้ตรงนี้
   // เพื่อไม่ให้ JSX ยาวเกินไป
@@ -322,13 +332,14 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
               <header className="mapPopupIntro">
                 <h3 className="mapPopupTitle">{selectedMarker.pairLabel}</h3>
                 <p className="mapPopupSubtitle">
-                  {selectedMarker.hotspots.length} hotspot{selectedMarker.hotspots.length === 1 ? "" : "s"} in this
-                  image
+                  {selectedMarkerHasHotspots
+                    ? `${selectedMarker.hotspots.length} hotspot${selectedMarker.hotspots.length === 1 ? "" : "s"} in this image`
+                    : "No hotspot detected in this image"}
                 </p>
               </header>
 
               {/* ถ้าเป็นหน้าจอเล็ก จะแสดงปุ่มเลือก hotspot เป็นแถบด้านบน */}
-              {isCompactPopup && (
+              {isCompactPopup && selectedMarkerHasHotspots && (
                 <div className="mapPopupCompactRail" role="tablist" aria-label="Hotspot selector">
                   {selectedMarker.hotspots.map((hotspot, hotspotIndex) => (
                     <button
@@ -379,6 +390,14 @@ export default function MapView({ markers, selectedMarkerId, onSelectMarker }: P
                     </div>
                   </section>
                 ))}
+                {!selectedMarkerHasHotspots && (
+                  <section className="mapPopupHotspotCard mapPopupNoHotspotCard">
+                    <p className="mapPopupHotspotName">No hotspot detected</p>
+                    <p className="mapPopupNoHotspotText">
+                      GPS was found for this image, but the model did not detect any hotspot.
+                    </p>
+                  </section>
+                )}
               </div>
             </div>
           </Popup>

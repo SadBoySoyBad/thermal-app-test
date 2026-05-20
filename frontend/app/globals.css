@@ -678,6 +678,12 @@ body::after {
   align-items: start;
 }
 
+.selectedPairMediaStack {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
 .selectedPairInfoStack {
   display: grid;
   gap: 14px;
@@ -728,6 +734,55 @@ body::after {
   font-size: 13px;
   line-height: 1.45;
   color: var(--text-1);
+}
+
+.displayRangeControlGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.displayRangeField {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.displayRangeField span {
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.displayRangeInput {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(31, 27, 22, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text-0);
+  font: inherit;
+  font-size: 13px;
+  padding: 0 12px;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+}
+
+.displayRangeInput:focus {
+  border-color: rgba(31, 27, 22, 0.28);
+  box-shadow: 0 0 0 3px rgba(244, 126, 77, 0.16);
+}
+
+.displayRangeInput:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.displayRangeControlGrid .imageDownloadButton {
+  width: 100%;
 }
 
 .comparisonPlaceholder {
@@ -1131,6 +1186,13 @@ body::after {
   color: #312a24;
 }
 
+.mapPopupNoHotspotText {
+  margin: 4px 0 0;
+  font-size: 0.84rem;
+  line-height: 1.24;
+  color: #6f655b;
+}
+
 .mapPopupPriority {
   display: inline-flex;
   align-items: center;
@@ -1144,18 +1206,23 @@ body::after {
 }
 
 .mapPopupPriorityP1 {
-  background: #f8d8d2;
-  color: #9e382d;
+  background: #ffe0dd;
+  color: #e9332c;
 }
 
 .mapPopupPriorityP2 {
-  background: #f8e2c7;
-  color: #a25f11;
+  background: #ffe8d5;
+  color: #f39a4a;
 }
 
 .mapPopupPriorityP3 {
-  background: #f4e7c0;
-  color: #8c6811;
+  background: #fff4bf;
+  color: #e0b91f;
+}
+
+.mapPopupPriorityP4 {
+  background: #e9f8d8;
+  color: #85cf2d;
 }
 
 .mapPopupPriorityDefault {
@@ -1228,15 +1295,19 @@ body::after {
 }
 
 .mapMarkerP1 {
-  background: #d13f2f;
+  background: #e9332c;
 }
 
 .mapMarkerP2 {
-  background: #f08a29;
+  background: #f39a4a;
 }
 
 .mapMarkerP3 {
-  background: #f3be4d;
+  background: #ffe25a;
+}
+
+.mapMarkerP4 {
+  background: #85cf2d;
 }
 
 .mapMarkerDefault {
@@ -1306,6 +1377,10 @@ body::after {
 
   .comparisonCardActions {
     width: 100%;
+  }
+
+  .displayRangeControlGrid {
+    grid-template-columns: 1fr;
   }
 
   .imageDownloadButton {

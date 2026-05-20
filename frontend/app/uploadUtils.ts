@@ -102,8 +102,9 @@ export type MatchedPair = {
   id: string;
   key: string;
   displayName: string;
+  analysisMode: "paired" | "thermal_only";
   thermal: File;
-  rgb: File;
+  rgb: File | null;
 };
 
 // ปัญหาที่พบตอนจับคู่ไฟล์
@@ -142,9 +143,10 @@ export type AnalysisResult = {
   // fileId คือ id ของไฟล์/งานจาก backend
   // ใช้เอาไว้ผูกข้อมูลผลวิเคราะห์กับงานจริงในระบบ
   fileId: string;
+  analysisMode: "paired" | "thermal_only";
 
   thermalFileName: string;
-  rgbFileName: string;
+  rgbFileName: string | null;
 
   // [แก้ไขล่าสุดใน version นี้]
   // thermalImage = รูป thermal ดั้งเดิม
@@ -161,6 +163,8 @@ export type AnalysisResult = {
   // annotatedImageFixedRange = รูปที่วาดกรอบบนภาพ fixed range
   annotatedImage: string | null;
   annotatedImageCamera: string | null;
+  hotspotDetectionImage: string | null;
+  equipmentDetectionImage: string | null;
   annotatedImageFixedRange: string | null;
 
   detections: Detection[];
@@ -176,6 +180,13 @@ export type AnalysisResult = {
   thermalError: string;
   thermalMode: ThermalMode | null;
   referenceTemperature: number | null;
+  thermalImageMinTemperature: number | null;
+  thermalImageMaxTemperature: number | null;
+  fixedRangeMinTemperature: number | null;
+  fixedRangeMaxTemperature: number | null;
+  rgbDetectionCropMargin: number | null;
+  rgbDetectionCropBbox: [number, number, number, number] | null;
+  rgbDetectionSize: [number, number] | null;
 
   // [แก้ไขล่าสุดใน version นี้]
   // autoReferenceTemperature = ค่า reference ที่ระบบคำนวณให้อัตโนมัติ
@@ -410,28 +421,47 @@ export async function matchUploadPairs(files: File[]) {
         id: `${key || "pair"}-${index + 1}`,
         key,
         displayName: formatDisplayName(key, fallbackName),
+        analysisMode: "paired",
         thermal: thermal.file,
         rgb: rgb.file,
       });
     }
 
-    // ไฟล์ที่เหลือและจับคู่ไม่ได้
-    const leftovers = [...thermals.slice(pairCount), ...rgbs.slice(pairCount), ...unknowns];
+    // thermal ที่เหลือโดยไม่มี RGB คู่ จะยังวิเคราะห์ hotspot/temperature ได้
+    // แต่จะไม่เอาไป match กับอุปกรณ์ เพราะไม่มีภาพ RGB ให้โมเดล equipment ใช้
+    const thermalOnlyItems = thermals.slice(pairCount);
+    for (const [thermalOnlyIndex, thermal] of thermalOnlyItems.entries()) {
+      pairs.push({
+        id: `${key || "thermal"}-thermal-only-${thermalOnlyIndex + 1}`,
+        key,
+        displayName: formatDisplayName(key, thermal.stem),
+        analysisMode: "thermal_only",
+        thermal: thermal.file,
+        rgb: null,
+      });
+    }
 
-    if (leftovers.length > 0 || pairCount === 0) {
+    // ไฟล์ที่เหลือและจับคู่ไม่ได้
+    const leftovers = [...rgbs.slice(pairCount), ...unknowns];
+
+    if (leftovers.length > 0 || (pairCount === 0 && thermalOnlyItems.length === 0)) {
+      const hasAnalysisItem = pairCount > 0 || thermalOnlyItems.length > 0;
       issues.push({
         id: key || `issue-${issues.length + 1}`,
         displayName: formatDisplayName(key, leftovers[0]?.stem ?? `Group ${issues.length + 1}`),
         fileNames: group.map((candidate) => candidate.file.name),
         message:
-          pairCount === 0
-            ? "Unable to auto-match this group. Files with the same running number should be uploaded as one T/V pair."
-            : "Some files in this group were skipped because more than one file used the same number.",
+          hasAnalysisItem
+            ? "Some RGB or unknown files in this group were skipped because thermal-only analysis does not use RGB-only files."
+            : "Unable to auto-match this group. Upload a thermal image alone, or upload matching T/V thermal and RGB files.",
       });
     }
   }
 
-  pairs.sort((left, right) => left.displayName.localeCompare(right.displayName));
+  pairs.sort(
+    (left, right) =>
+      left.displayName.localeCompare(right.displayName) || left.analysisMode.localeCompare(right.analysisMode),
+  );
   issues.sort((left, right) => left.displayName.localeCompare(right.displayName));
 
   return { pairs, issues };
@@ -528,8 +558,25 @@ export function describeBackendStep(step: string | null | undefined, details: Re
 // ==============================
 // แปลงข้อมูลที่ backend ส่งกลับมา
 // ให้เป็นรูปแบบที่หน้าเว็บใช้งานง่าย
+function toNumberTuple(value: unknown, expectedLength: 2): [number, number] | null;
+function toNumberTuple(value: unknown, expectedLength: 4): [number, number, number, number] | null;
+function toNumberTuple(value: unknown, expectedLength: 2 | 4) {
+  if (!Array.isArray(value) || value.length !== expectedLength) {
+    return null;
+  }
+
+  const numbers = value.map((item) => (typeof item === "number" && Number.isFinite(item) ? item : null));
+  if (numbers.some((item) => item === null)) {
+    return null;
+  }
+
+  return numbers;
+}
+
 export function toAnalysisResult(pair: MatchedPair, responseData: Record<string, unknown>, requestId: string): AnalysisResult {
   let thermalMode: ThermalMode | null = null;
+  const analysisMode =
+    responseData.analysis_mode === "thermal_only" || pair.analysisMode === "thermal_only" ? "thermal_only" : "paired";
 
   if (
     responseData.thermal_mode === "none" ||
@@ -568,6 +615,19 @@ export function toAnalysisResult(pair: MatchedPair, responseData: Record<string,
 
   // [แก้ไขล่าสุดใน version นี้]
   // thermalImage = รูป thermal ที่อัปโหลดเข้าไป
+  // [เพิ่มใหม่]
+  // รูป debug จากโมเดลก่อนขั้น match:
+  // hotspotDetectionImage = ผล hotspot model บน thermal
+  // equipmentDetectionImage = ผล equipment model บน RGB
+  const hotspotDetectionImage =
+    typeof responseData.hotspot_detection_image === "string" && responseData.hotspot_detection_image.trim()
+      ? toAbsoluteImageUrl(responseData.hotspot_detection_image)
+      : null;
+  const equipmentDetectionImage =
+    typeof responseData.equipment_detection_image === "string" && responseData.equipment_detection_image.trim()
+      ? toAbsoluteImageUrl(responseData.equipment_detection_image)
+      : null;
+
   const thermalImage =
     typeof responseData.uploaded_image === "string" && responseData.uploaded_image.trim()
       ? toAbsoluteImageUrl(responseData.uploaded_image)
@@ -595,9 +655,10 @@ export function toAnalysisResult(pair: MatchedPair, responseData: Record<string,
     // [แก้ไขล่าสุดใน version นี้]
     // รับ file id จาก backend ถ้ามี
     fileId: typeof responseData.file_id === "string" ? responseData.file_id : "",
+    analysisMode,
 
     thermalFileName: pair.thermal.name,
-    rgbFileName: pair.rgb.name,
+    rgbFileName: pair.rgb?.name ?? null,
     thermalImage,
     rgbImage,
     fixedRangeImage,
@@ -607,6 +668,8 @@ export function toAnalysisResult(pair: MatchedPair, responseData: Record<string,
     // เพื่อให้หน้าเว็บใช้งาน field เดิมต่อได้โดยไม่ต้องแก้ทุกจุด
     annotatedImage: annotatedImageCamera,
     annotatedImageCamera,
+    hotspotDetectionImage,
+    equipmentDetectionImage,
     annotatedImageFixedRange,
     detections,
 
@@ -620,6 +683,18 @@ export function toAnalysisResult(pair: MatchedPair, responseData: Record<string,
     thermalError: typeof responseData.thermal_error === "string" ? responseData.thermal_error : "",
     thermalMode,
     referenceTemperature,
+    thermalImageMinTemperature:
+      typeof responseData.thermal_image_min_temperature === "number" ? responseData.thermal_image_min_temperature : null,
+    thermalImageMaxTemperature:
+      typeof responseData.thermal_image_max_temperature === "number" ? responseData.thermal_image_max_temperature : null,
+    fixedRangeMinTemperature:
+      typeof responseData.fixed_range_min_temperature === "number" ? responseData.fixed_range_min_temperature : null,
+    fixedRangeMaxTemperature:
+      typeof responseData.fixed_range_max_temperature === "number" ? responseData.fixed_range_max_temperature : null,
+    rgbDetectionCropMargin:
+      typeof responseData.rgb_detection_crop_margin === "number" ? responseData.rgb_detection_crop_margin : null,
+    rgbDetectionCropBbox: toNumberTuple(responseData.rgb_detection_crop_bbox, 4),
+    rgbDetectionSize: toNumberTuple(responseData.rgb_detection_size, 2),
 
     // [แก้ไขล่าสุดใน version นี้]
     // ตอนเริ่มต้นให้ค่า autoReferenceTemperature เท่ากับค่า reference ที่ระบบคำนวณมา
@@ -713,6 +788,9 @@ function getPriorityRank(priority: string | null | undefined) {
   }
   if (normalized.includes("priority 3")) {
     return 3;
+  }
+  if (normalized.includes("priority 4")) {
+    return 4;
   }
   return Number.POSITIVE_INFINITY;
 }

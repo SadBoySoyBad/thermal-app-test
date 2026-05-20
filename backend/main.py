@@ -471,9 +471,31 @@ app.add_middleware(
 # ส่วนที่ 3: config หลักของระบบจาก environment variables
 # ใช้ปรับพฤติกรรมระบบ เช่น threshold, ขนาดภาพ, การ align thermal กับ RGB โดยไม่ต้องแก้โค้ดตรง ๆ
 # ------------------------------
-YOLO_DEVICE = os.getenv("YOLO_DEVICE", "cpu")
-HOTSPOT_CONFIDENCE = _env_float("HOTSPOT_CONFIDENCE", 0.2)
-HOTSPOT_IOU = _env_float("HOTSPOT_IOU", 0.5)
+def _load_yolo_device() -> str:
+    """
+    เลือก device สำหรับ YOLO:
+    - ถ้าไม่ตั้ง YOLO_DEVICE หรือใช้ auto จะเลือก cuda เมื่อมี GPU และ fallback เป็น cpu เมื่อไม่มี GPU
+    - ถ้าตั้ง YOLO_DEVICE เองเป็น cuda/cpu จะใช้ค่านั้นตรง ๆ
+    - ถ้าบังคับ cuda แต่ PyTorch ไม่เห็น CUDA จะ error เพื่อให้รู้ว่าติดตั้ง torch/GPU ยังไม่พร้อม
+    """
+    configured_device = os.getenv("YOLO_DEVICE", "auto").strip() or "auto"
+    normalized_device = configured_device.lower()
+
+    if normalized_device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if normalized_device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(
+            "YOLO_DEVICE requires CUDA, but PyTorch cannot see CUDA. "
+            "Use YOLO_DEVICE=auto/cpu or install a CUDA-enabled torch build in backend\\venv before starting the backend."
+        )
+
+    return configured_device
+
+
+YOLO_DEVICE = _load_yolo_device()
+# HOTSPOT_CONFIDENCE = _env_float("HOTSPOT_CONFIDENCE", 0.34)
+HOTSPOT_CONFIDENCE = _env_float("HOTSPOT_CONFIDENCE", 0.34)
+HOTSPOT_IOU = _env_float("HOTSPOT_IOU", 0.7)
 EQUIPMENT_CONFIDENCE = _env_float("EQUIPMENT_CONFIDENCE", 0.2)
 EQUIPMENT_IOU = _env_float("EQUIPMENT_IOU", 0.5)
 
@@ -484,7 +506,7 @@ THERMAL_CENTER_SHIFT_Y = _env_int("THERMAL_CENTER_SHIFT_Y", -1)
 
 # [ค่าขยายกรอบอุปกรณ์]
 # ใช้ขยาย bbox ของ equipment เพื่อช่วยการ match
-EQUIPMENT_BBOX_DILATION = _env_int("EQUIPMENT_BBOX_DILATION", 12)
+EQUIPMENT_BBOX_DILATION = _env_int("EQUIPMENT_BBOX_DILATION", 100)
 
 # [ค่าระยะสูงสุดสำหรับการจับคู่]
 # ระยะ threshold สูงสุดสำหรับ match แบบ nearest
@@ -496,13 +518,15 @@ REFERENCE_TEMP_MAX_C = _env_float("REFERENCE_TEMP_MAX_C", 28.0)
 
 # [ค่าการเตรียมภาพ RGB ก่อนตรวจจับ]
 # จำกัดขนาดรูป RGB ตอน detect และ margin ตอน crop
+# ถ้าตั้ง RGB_DETECTION_CROP_MARGIN เป็น -1 จะไม่ crop และส่ง RGB เต็มภาพเข้า model
 RGB_DETECTION_MAX_DIM = _env_int("RGB_DETECTION_MAX_DIM", 1600)
-RGB_DETECTION_CROP_MARGIN = _env_int("RGB_DETECTION_CROP_MARGIN", 120)
+RGB_DETECTION_CROP_MARGIN = _env_int("RGB_DETECTION_CROP_MARGIN", 800)
 
 # [ค่าขนาดภาพสำหรับโมเดล]
 # imgsz แยกของ hotspot / equipment model
-HOTSPOT_IMGSZ = _env_int("HOTSPOT_IMGSZ", 640)
-EQUIPMENT_IMGSZ = _env_int("EQUIPMENT_IMGSZ", 640)
+HOTSPOT_IMGSZ = _env_int("HOTSPOT_IMGSZ", 960)
+# เปลี่ยนจาก 640 เป็น 1280 เพื่อให้โมเดล equipment ตรวจจับอุปกรณ์เล็ก ๆ ได้ดีขึ้น
+EQUIPMENT_IMGSZ = _env_int("EQUIPMENT_IMGSZ", 1280)
 
 # [ค่าจำนวน threads ของ PyTorch]
 # จำนวน threads ของ PyTorch
@@ -547,11 +571,13 @@ def _load_yolo_model(model_path: Path, required: bool) -> Optional[YOLO]:
 
 # log config model ตอนเริ่ม backend
 logger.info(
-    "models_config hotspot_model=%s hotspot_exists=%s equipment_model=%s equipment_exists=%s hotspot_imgsz=%s equipment_imgsz=%s torch_threads=%s torch_interop_threads=%s",
+    "models_config hotspot_model=%s hotspot_exists=%s equipment_model=%s equipment_exists=%s yolo_device=%s cuda_available=%s hotspot_imgsz=%s equipment_imgsz=%s torch_threads=%s torch_interop_threads=%s",
     HOTSPOT_MODEL_PATH,
     HOTSPOT_MODEL_PATH.exists(),
     EQUIPMENT_MODEL_PATH,
     EQUIPMENT_MODEL_PATH.exists(),
+    YOLO_DEVICE,
+    torch.cuda.is_available(),
     HOTSPOT_IMGSZ,
     EQUIPMENT_IMGSZ,
     TORCH_NUM_THREADS,
@@ -1095,11 +1121,80 @@ def _json_error(message: str, request_id: str, status_code: int, **extra: Any) -
 # รัน YOLO บนภาพ 1 ภาพ แล้วคืนผลลัพธ์เป็น list ของ detection dict
 # ใช้ได้ทั้ง hotspot model และ equipment model
 # ------------------------------
+def _describe_cuda_device() -> str:
+    """
+    คืนชื่อ GPU ที่ PyTorch เห็น เพื่อให้ log บอกได้ชัดว่ามี CUDA จริงไหม
+    """
+    if not torch.cuda.is_available():
+        return "none"
+    try:
+        return torch.cuda.get_device_name(0)
+    except Exception:
+        return "cuda_available_unknown_name"
+
+
+def _describe_yolo_model_device(model: YOLO) -> str:
+    """
+    อ่าน device จริงจากตัวโมเดลหลัง YOLO เตรียม inference แล้ว
+    ใช้ช่วยแยกว่าโมเดลกำลังอยู่บน cpu หรือ cuda
+    """
+    inner_model = getattr(model, "model", None)
+    parameters = getattr(inner_model, "parameters", None)
+    if not callable(parameters):
+        return "unknown"
+
+    try:
+        return str(next(parameters()).device)
+    except StopIteration:
+        return "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _describe_yolo_result_device(model_results: list[Any]) -> str:
+    """
+    อ่าน device จาก tensor ผลลัพธ์ YOLO ถ้ามี detection กลับมา
+    ถ้าไม่มี box จะคืน unknown เพราะไม่มี tensor ให้ดู
+    """
+    if not model_results:
+        return "unknown"
+
+    boxes = getattr(model_results[0], "boxes", None)
+    data = getattr(boxes, "data", None)
+    device = getattr(data, "device", None)
+    return str(device) if device is not None else "unknown"
+
+
+def _device_runtime_label(device_name: str) -> str:
+    """
+    แปลงชื่อ device ให้เป็นคำอ่านง่ายใน log
+    """
+    normalized = device_name.strip().lower()
+    if normalized.startswith("cuda") or normalized.startswith("mps") or normalized.isdigit():
+        return "gpu"
+    if normalized.startswith("cpu"):
+        return "cpu"
+    return "unknown"
+
+
 def _run_yolo_detection(model: YOLO, image_path: Path, conf: float, iou: float, imgsz: int) -> list[dict[str, Any]]:
     """
     รันโมเดล YOLO กับภาพ 1 ใบ และแปลงผลลัพธ์เป็น dict แบบเรียบง่าย:
     bbox, confidence, class_id
     """
+    inference_started_at = time.perf_counter()
+    logger.info(
+        "yolo_inference_started image=%s requested_device=%s expected_runtime=%s cuda_available=%s cuda_device=%s imgsz=%s conf=%.3f iou=%.3f",
+        image_path.name,
+        YOLO_DEVICE,
+        _device_runtime_label(YOLO_DEVICE),
+        torch.cuda.is_available(),
+        _describe_cuda_device(),
+        max(32, imgsz),
+        conf,
+        iou,
+    )
+
     model_results = model(
         str(image_path),
         conf=conf,
@@ -1110,6 +1205,17 @@ def _run_yolo_detection(model: YOLO, image_path: Path, conf: float, iou: float, 
 
     detections: list[dict[str, Any]] = []
     if not model_results or model_results[0].boxes is None:
+        model_device = _describe_yolo_model_device(model)
+        result_device = _describe_yolo_result_device(model_results)
+        logger.info(
+            "yolo_inference_finished image=%s requested_device=%s model_device=%s result_device=%s actual_runtime=%s detection_count=0 elapsed_seconds=%.2f",
+            image_path.name,
+            YOLO_DEVICE,
+            model_device,
+            result_device,
+            _device_runtime_label(model_device if model_device != "unknown" else result_device),
+            time.perf_counter() - inference_started_at,
+        )
         return detections
 
     result = model_results[0]
@@ -1129,6 +1235,19 @@ def _run_yolo_detection(model: YOLO, image_path: Path, conf: float, iou: float, 
                 "class_id": int(class_ids[index]),
             }
         )
+
+    model_device = _describe_yolo_model_device(model)
+    result_device = _describe_yolo_result_device(model_results)
+    logger.info(
+        "yolo_inference_finished image=%s requested_device=%s model_device=%s result_device=%s actual_runtime=%s detection_count=%s elapsed_seconds=%.2f",
+        image_path.name,
+        YOLO_DEVICE,
+        model_device,
+        result_device,
+        _device_runtime_label(model_device if model_device != "unknown" else result_device),
+        len(detections),
+        time.perf_counter() - inference_started_at,
+    )
 
     return detections
 
@@ -1625,6 +1744,8 @@ def _render_fixed_range_thermal_image(
     thermal_matrix: Optional[np.ndarray],
     image_width: int,
     image_height: int,
+    display_min_c: Optional[float] = None,
+    display_max_c: Optional[float] = None,
 ) -> Optional[Image.Image]:
     """
     render thermal matrix ให้เป็นภาพสีด้วยช่วงอุณหภูมิคงที่
@@ -1637,11 +1758,13 @@ def _render_fixed_range_thermal_image(
     if not np.any(finite_mask):
         return None
 
-    display_range = DISPLAY_TEMP_MAX_C - DISPLAY_TEMP_MIN_C
+    min_c = DISPLAY_TEMP_MIN_C if display_min_c is None else display_min_c
+    max_c = DISPLAY_TEMP_MAX_C if display_max_c is None else display_max_c
+    display_range = max_c - min_c
     if display_range <= 0:
         return None
 
-    normalized_matrix = np.clip((thermal_matrix - DISPLAY_TEMP_MIN_C) / display_range, 0.0, 1.0).astype(np.float32)
+    normalized_matrix = np.clip((thermal_matrix - min_c) / display_range, 0.0, 1.0).astype(np.float32)
     rgb_matrix = np.zeros((*thermal_matrix.shape, 3), dtype=np.uint8)
 
     stop_positions = THERMAL_DISPLAY_COLOR_STOPS[:, 0]
@@ -1664,6 +1787,308 @@ def _render_fixed_range_thermal_image(
     if rendered_image.size != (image_width, image_height):
         rendered_image = rendered_image.resize((image_width, image_height), resample=Image.Resampling.BILINEAR)
     return rendered_image
+
+
+def _get_thermal_matrix_temperature_range(thermal_matrix: Optional[np.ndarray]) -> tuple[Optional[float], Optional[float]]:
+    """
+    หาช่วงอุณหภูมิจริงของภาพ thermal จาก matrix
+    ใช้เพื่อบอกผู้ใช้ว่าภาพเดิมตอนนี้มี min/max ประมาณเท่าไหร่
+    """
+    if thermal_matrix is None:
+        return None, None
+
+    finite_values = thermal_matrix[np.isfinite(thermal_matrix)]
+    if finite_values.size == 0:
+        return None, None
+
+    return float(np.nanmin(finite_values)), float(np.nanmax(finite_values))
+
+
+def _draw_detection_annotations_on_thermal(
+    thermal_image: Image.Image,
+    detections: list[dict[str, Any]],
+    thermal_image_width: int,
+    thermal_image_height: int,
+) -> None:
+    """
+    วาดกรอบ hotspot เดิมซ้ำบนภาพ thermal ที่ render ใหม่
+    ใช้ตอนผู้ใช้เปลี่ยน display range โดยไม่ต้อง rerun model
+    """
+    thermal_draw = ImageDraw.Draw(thermal_image)
+
+    for hotspot_index, detection in enumerate(detections, start=1):
+        raw_box = detection.get("thermal_bbox")
+        if not isinstance(raw_box, list) or len(raw_box) != 4:
+            raw_box = detection.get("bbox")
+        if not isinstance(raw_box, list) or len(raw_box) != 4:
+            continue
+
+        try:
+            thermal_box = tuple(
+                _safe_bbox(
+                    int(round(float(raw_box[0]))),
+                    int(round(float(raw_box[1]))),
+                    int(round(float(raw_box[2]))),
+                    int(round(float(raw_box[3]))),
+                    thermal_image_width,
+                    thermal_image_height,
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+
+        thermal_draw.rectangle(thermal_box, outline="orange", width=3)
+        _draw_hotspot_index_label(
+            draw=thermal_draw,
+            thermal_box=thermal_box,
+            hotspot_index=hotspot_index,
+            thermal_image_width=thermal_image_width,
+            thermal_image_height=thermal_image_height,
+        )
+
+        for point_key, point_color in (("max_point", "red"), ("min_point", "blue")):
+            raw_point = detection.get(point_key)
+            if not isinstance(raw_point, list) or len(raw_point) != 2:
+                continue
+            try:
+                point_x = int(round(float(raw_point[0])))
+                point_y = int(round(float(raw_point[1])))
+            except (TypeError, ValueError):
+                continue
+            thermal_draw.ellipse([point_x - 4, point_y - 4, point_x + 4, point_y + 4], fill=point_color)
+
+        max_temp = detection.get("max_temp")
+        min_temp = detection.get("min_temp")
+        avg_temp = detection.get("avg_temp")
+        if isinstance(max_temp, (int, float)) and isinstance(min_temp, (int, float)) and isinstance(avg_temp, (int, float)):
+            thermal_draw.text(
+                (thermal_box[0], max(0, thermal_box[1] - 15)),
+                f"max {float(max_temp):.1f}C min {float(min_temp):.1f}C avg {float(avg_temp):.1f}C",
+                fill="white",
+            )
+
+
+def _draw_debug_label(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], label_text: str, color: str) -> None:
+    """
+    วาด label เล็ก ๆ บนภาพ debug ของโมเดล
+    ใช้เพื่อดูว่าโมเดล detect อะไรได้บ้างก่อนเอาไป match กัน
+    """
+    padding_x = 6
+    padding_y = 4
+    try:
+        text_left, text_top, text_right, text_bottom = draw.textbbox((0, 0), label_text)
+        text_width = text_right - text_left
+        text_height = text_bottom - text_top
+    except AttributeError:
+        text_width, text_height = draw.textsize(label_text)
+
+    label_x1 = box[0]
+    label_y1 = max(0, box[1] - text_height - padding_y * 2)
+    label_x2 = label_x1 + text_width + padding_x * 2
+    label_y2 = label_y1 + text_height + padding_y * 2
+
+    draw.rounded_rectangle([label_x1, label_y1, label_x2, label_y2], radius=8, fill=color)
+    draw.text((label_x1 + padding_x, label_y1 + padding_y), label_text, fill="white")
+
+
+def _draw_hotspot_model_debug_image(
+    image: Image.Image,
+    hotspot_predictions: list[dict[str, Any]],
+    image_width: int,
+    image_height: int,
+) -> None:
+    """
+    วาดผลจาก hotspot model อย่างเดียวบนภาพ thermal
+    ภาพนี้ตั้งใจให้ใช้ตรวจว่า AI เจอ hotspot ตรงไหน ก่อนขั้นจับคู่กับอุปกรณ์
+    """
+    draw = ImageDraw.Draw(image)
+    for hotspot_index, hotspot_prediction in enumerate(hotspot_predictions, start=1):
+        try:
+            raw_box = hotspot_prediction["bbox"]
+            box = tuple(
+                _safe_bbox(
+                    int(round(float(raw_box[0]))),
+                    int(round(float(raw_box[1]))),
+                    int(round(float(raw_box[2]))),
+                    int(round(float(raw_box[3]))),
+                    image_width,
+                    image_height,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        confidence = float(hotspot_prediction.get("confidence", 0.0))
+        draw.rectangle(box, outline="#ffb02e", width=4)
+        _draw_debug_label(draw, box, f"Hotspot {hotspot_index} {confidence:.2f}", "#1f1b16")
+
+
+def _draw_equipment_model_debug_image(
+    image: Image.Image,
+    equipments: list[dict[str, Any]],
+    image_width: int,
+    image_height: int,
+    source_offset_x: int = 0,
+    source_offset_y: int = 0,
+) -> None:
+    """
+    วาดผลจาก equipment model อย่างเดียวบนภาพ RGB
+    ภาพนี้ช่วยดูว่าโมเดล RGB ตรวจเจออุปกรณ์อะไรบ้าง ก่อนเอา hotspot ไป match
+    """
+    draw = ImageDraw.Draw(image)
+    line_width = max(6, int(round(min(image_width, image_height) * 0.008)))
+    for equipment_index, equipment in enumerate(equipments, start=1):
+        try:
+            raw_box = equipment["bbox"]
+            x1 = int(round(float(raw_box[0]) - source_offset_x))
+            y1 = int(round(float(raw_box[1]) - source_offset_y))
+            x2 = int(round(float(raw_box[2]) - source_offset_x))
+            y2 = int(round(float(raw_box[3]) - source_offset_y))
+            if x2 <= 0 or y2 <= 0 or x1 >= image_width or y1 >= image_height:
+                continue
+            box = tuple(
+                _safe_bbox(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    image_width,
+                    image_height,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        label = str(equipment.get("label") or f"Equipment {equipment_index}")
+        confidence = float(equipment.get("confidence", 0.0))
+        draw.rectangle(box, outline="#2f5d96", width=line_width)
+        _draw_debug_label(draw, box, f"{label} {confidence:.2f}", "#2f5d96")
+
+
+def _draw_projected_hotspots_on_rgb_debug_image(
+    image: Image.Image,
+    detections: list[dict[str, Any]],
+    image_width: int,
+    image_height: int,
+    scale_x: float,
+    scale_y: float,
+    crop_offset_x: int,
+    crop_offset_y: int,
+) -> None:
+    """
+    วาดกรอบ hotspot ที่ project ไปบนภาพ RGB crop/resize
+    ภาพนี้เป็นภาพเดียวกับที่ส่งเข้า equipment model จึงต้องแปลงพิกัด RGB เต็มใบกลับเป็นพิกัดภาพ detect
+    """
+    draw = ImageDraw.Draw(image)
+    line_width = max(6, int(round(min(image_width, image_height) * 0.008)))
+    point_radius = max(4, int(round(min(image_width, image_height) * 0.004)))
+    for hotspot_index, detection in enumerate(detections, start=1):
+        try:
+            raw_box = detection["bbox"]
+            x1 = int(round((float(raw_box[0]) - crop_offset_x) / scale_x))
+            y1 = int(round((float(raw_box[1]) - crop_offset_y) / scale_y))
+            x2 = int(round((float(raw_box[2]) - crop_offset_x) / scale_x))
+            y2 = int(round((float(raw_box[3]) - crop_offset_y) / scale_y))
+            if x2 <= 0 or y2 <= 0 or x1 >= image_width or y1 >= image_height:
+                continue
+            box = tuple(_safe_bbox(x1, y1, x2, y2, image_width, image_height))
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            continue
+
+        draw.rectangle(box, outline="#ffb02e", width=line_width)
+        _draw_hotspot_index_label(
+            draw=draw,
+            thermal_box=box,
+            hotspot_index=hotspot_index,
+            thermal_image_width=image_width,
+            thermal_image_height=image_height,
+        )
+
+        # วาดจุด max/min และข้อความอุณหภูมิแบบเดียวกับภาพ thermal
+        # แต่แปลงพิกัด thermal -> RGB crop/resize ก่อน เพื่อให้ตำแหน่งตรงกับภาพที่แสดง
+        raw_thermal_box = detection.get("thermal_bbox")
+        if isinstance(raw_thermal_box, list) and len(raw_thermal_box) == 4:
+            for point_key, point_color in (("max_point", "red"), ("min_point", "blue")):
+                raw_point = detection.get(point_key)
+                if not isinstance(raw_point, list) or len(raw_point) != 2:
+                    continue
+                try:
+                    projected_x = float(raw_point[0]) + float(raw_box[0]) - float(raw_thermal_box[0])
+                    projected_y = float(raw_point[1]) + float(raw_box[1]) - float(raw_thermal_box[1])
+                    point_x = int(round((projected_x - crop_offset_x) / scale_x))
+                    point_y = int(round((projected_y - crop_offset_y) / scale_y))
+                except (TypeError, ValueError, ZeroDivisionError):
+                    continue
+                if point_x < 0 or point_y < 0 or point_x >= image_width or point_y >= image_height:
+                    continue
+                draw.ellipse(
+                    [
+                        point_x - point_radius,
+                        point_y - point_radius,
+                        point_x + point_radius,
+                        point_y + point_radius,
+                    ],
+                    fill=point_color,
+                )
+
+        max_temp = detection.get("max_temp")
+        min_temp = detection.get("min_temp")
+        avg_temp = detection.get("avg_temp")
+        if isinstance(max_temp, (int, float)) and isinstance(min_temp, (int, float)) and isinstance(avg_temp, (int, float)):
+            draw.text(
+                (box[0], max(0, box[1] - 18)),
+                f"max {float(max_temp):.1f}C min {float(min_temp):.1f}C avg {float(avg_temp):.1f}C",
+                fill="white",
+                stroke_width=2,
+                stroke_fill="#1f1b16",
+            )
+
+
+def _draw_rgb_crop_context_debug_image(
+    image: Image.Image,
+    crop_bbox: tuple[int, int, int, int],
+    equipments: list[dict[str, Any]],
+    original_width: int,
+    original_height: int,
+) -> None:
+    """
+    วาดภาพ RGB เต็มใบสำหรับ debug ว่าระบบ crop ส่วนไหนไปเข้า equipment model
+    ภาพนี้ไม่ใช่ภาพเข้าโมเดลโดยตรง แต่ใช้เป็นแผนที่อธิบาย crop area ให้ดูง่ายขึ้น
+    """
+    preview_width, preview_height = image.size
+    scale_x = preview_width / float(original_width)
+    scale_y = preview_height / float(original_height)
+
+    def scale_box(raw_box: tuple[int, int, int, int] | list[float]) -> tuple[int, int, int, int]:
+        return _safe_bbox(
+            int(round(float(raw_box[0]) * scale_x)),
+            int(round(float(raw_box[1]) * scale_y)),
+            int(round(float(raw_box[2]) * scale_x)),
+            int(round(float(raw_box[3]) * scale_y)),
+            preview_width,
+            preview_height,
+        )
+
+    draw = ImageDraw.Draw(image)
+    crop_box = scale_box(crop_bbox)
+    crop_line_width = max(5, int(round(min(preview_width, preview_height) * 0.007)))
+    draw.rectangle(crop_box, outline="#ffb02e", width=crop_line_width)
+    _draw_debug_label(draw, crop_box, "RGB crop sent to equipment model", "#1f1b16")
+
+    scaled_equipments: list[dict[str, Any]] = []
+    for equipment in equipments:
+        raw_box = equipment.get("bbox")
+        if not isinstance(raw_box, list) or len(raw_box) != 4:
+            continue
+        scaled_equipments.append(
+            {
+                "bbox": list(scale_box(raw_box)),
+                "label": equipment.get("label"),
+                "confidence": equipment.get("confidence"),
+            }
+        )
+
+    _draw_equipment_model_debug_image(scaled_equipments and image or image, scaled_equipments, preview_width, preview_height)
 
 
 def _parse_normalized_roi(payload: Any) -> dict[str, float]:
@@ -1905,8 +2330,9 @@ def _analyze_saved_pair(
     file_id: str,
     thermal_uploaded_image_filename: str,
     thermal_uploaded_image_path: Path,
-    rgb_uploaded_image_filename: str,
-    rgb_uploaded_image_path: Path,
+    rgb_uploaded_image_filename: Optional[str] = None,
+    rgb_uploaded_image_path: Optional[Path] = None,
+    analysis_mode: str = "paired",
 ):
     """
     แกนหลักของระบบวิเคราะห์ภาพคู่ thermal + RGB
@@ -1946,22 +2372,28 @@ def _analyze_saved_pair(
         thermal_size=f"{thermal_image_width}x{thermal_image_height}",
     )
 
-    # อ่านขนาดภาพ RGB
-    _log_upload_step(request_id, "rgb_image_probe_started")
-    with Image.open(rgb_uploaded_image_path) as rgb_source_image:
-        rgb_image_width, rgb_image_height = rgb_source_image.size
-    _log_upload_step(
-        request_id,
-        "rgb_image_probe_finished",
-        rgb_size=f"{rgb_image_width}x{rgb_image_height}",
-    )
+    is_thermal_only = analysis_mode == "thermal_only"
+
+    # อ่านขนาดภาพ RGB เฉพาะงานที่มีคู่ RGB จริง
+    rgb_image_width = thermal_image_width
+    rgb_image_height = thermal_image_height
+    if not is_thermal_only and rgb_uploaded_image_path is not None:
+        _log_upload_step(request_id, "rgb_image_probe_started")
+        with Image.open(rgb_uploaded_image_path) as rgb_source_image:
+            rgb_image_width, rgb_image_height = rgb_source_image.size
+        _log_upload_step(
+            request_id,
+            "rgb_image_probe_finished",
+            rgb_size=f"{rgb_image_width}x{rgb_image_height}",
+        )
     gc.collect()
 
     _log_upload_step(
         request_id,
         "images_opened",
         thermal_size=f"{thermal_image_width}x{thermal_image_height}",
-        rgb_size=f"{rgb_image_width}x{rgb_image_height}",
+        rgb_size=f"{rgb_image_width}x{rgb_image_height}" if not is_thermal_only else None,
+        analysis_mode=analysis_mode,
     )
 
     # ------------------------------
@@ -1982,71 +2414,115 @@ def _analyze_saved_pair(
     # คำนวณ overlay ของ thermal บน RGB
     # แล้ว crop ภาพ RGB เฉพาะส่วนที่เกี่ยวข้องก่อน detect equipment
     # ------------------------------
-    rgb_overlay_bbox = _thermal_overlay_bbox_on_rgb(
-        thermal_image_width,
-        thermal_image_height,
-        rgb_image_width,
-        rgb_image_height,
-    )
-    rgb_crop_bbox = _dilate_bbox(
-        rgb_overlay_bbox,
-        RGB_DETECTION_CROP_MARGIN,
-        rgb_image_width,
-        rgb_image_height,
-    )
-    (
-        rgb_detection_path,
-        rgb_scale_x,
-        rgb_scale_y,
-        rgb_crop_offset_x,
-        rgb_crop_offset_y,
-        rgb_temp_path,
-        rgb_crop_size,
-        rgb_detection_size,
-        _,
-    ) = _prepare_cropped_resized_inference_image(
-        rgb_uploaded_image_path,
-        file_id,
-        "rgb",
-        rgb_crop_bbox,
-        RGB_DETECTION_MAX_DIM,
-    )
+    rgb_overlay_bbox = None
+    rgb_crop_bbox = None
+    rgb_detection_crop_margin_used = None
+    rgb_detection_size = None
+    rgb_scale_x = 1.0
+    rgb_scale_y = 1.0
+    rgb_crop_offset_x = 0
+    rgb_crop_offset_y = 0
+    equipment_predictions: list[dict[str, Any]] = []
+    equipment_predictions_for_debug: list[dict[str, Any]] = []
+    equipment_detection_debug_image = None
 
-    _log_upload_step(
-        request_id,
-        "rgb_model_started",
-        image_path=rgb_detection_path.name,
-        original_size=f"{rgb_image_width}x{rgb_image_height}",
-        overlay_bbox=f"{rgb_overlay_bbox[0]},{rgb_overlay_bbox[1]},{rgb_overlay_bbox[2]},{rgb_overlay_bbox[3]}",
-        crop_bbox=f"{rgb_crop_bbox[0]},{rgb_crop_bbox[1]},{rgb_crop_bbox[2]},{rgb_crop_bbox[3]}",
-        crop_size=f"{rgb_crop_size[0]}x{rgb_crop_size[1]}",
-        detect_size=f"{rgb_detection_size[0]}x{rgb_detection_size[1]}",
-        resized=rgb_detection_size != rgb_crop_size,
-    )
+    if is_thermal_only:
+        _log_upload_step(request_id, "rgb_model_skipped", reason="thermal_only")
+    else:
+        if rgb_uploaded_image_path is None:
+            raise ValueError("RGB image path is required for paired analysis.")
 
-    try:
-        equipment_predictions = _run_yolo_detection_from_path(
-            EQUIPMENT_MODEL_PATH,
-            False,
-            rgb_detection_path,
-            EQUIPMENT_CONFIDENCE,
-            EQUIPMENT_IOU,
-            EQUIPMENT_IMGSZ,
+        rgb_overlay_bbox = _thermal_overlay_bbox_on_rgb(
+            thermal_image_width,
+            thermal_image_height,
+            rgb_image_width,
+            rgb_image_height,
         )
-    finally:
-        # ลบไฟล์ detect ชั่วคราวทิ้งหลังใช้
-        if rgb_temp_path is not None and rgb_temp_path.exists():
-            rgb_temp_path.unlink()
+        if RGB_DETECTION_CROP_MARGIN < 0:
+            rgb_crop_bbox = (0, 0, rgb_image_width, rgb_image_height)
+        else:
+            rgb_crop_bbox = _dilate_bbox(
+                rgb_overlay_bbox,
+                RGB_DETECTION_CROP_MARGIN,
+                rgb_image_width,
+                rgb_image_height,
+            )
+        rgb_detection_crop_margin_used = RGB_DETECTION_CROP_MARGIN
+        (
+            rgb_detection_path,
+            rgb_scale_x,
+            rgb_scale_y,
+            rgb_crop_offset_x,
+            rgb_crop_offset_y,
+            rgb_temp_path,
+            rgb_crop_size,
+            rgb_detection_size,
+            _,
+        ) = _prepare_cropped_resized_inference_image(
+            rgb_uploaded_image_path,
+            file_id,
+            "rgb",
+            rgb_crop_bbox,
+            RGB_DETECTION_MAX_DIM,
+        )
 
-    # map bbox ของผล detect บนภาพ cropped/resized กลับไปยังพิกัดภาพ RGB จริง
-    for equipment_prediction in equipment_predictions:
-        equipment_prediction["bbox"] = [
-            float(equipment_prediction["bbox"][0] * rgb_scale_x + rgb_crop_offset_x),
-            float(equipment_prediction["bbox"][1] * rgb_scale_y + rgb_crop_offset_y),
-            float(equipment_prediction["bbox"][2] * rgb_scale_x + rgb_crop_offset_x),
-            float(equipment_prediction["bbox"][3] * rgb_scale_y + rgb_crop_offset_y),
-        ]
-    _log_upload_step(request_id, "rgb_model_done", equipment_count=len(equipment_predictions))
+        _log_upload_step(
+            request_id,
+            "rgb_model_started",
+            image_path=rgb_detection_path.name,
+            original_size=f"{rgb_image_width}x{rgb_image_height}",
+            overlay_bbox=f"{rgb_overlay_bbox[0]},{rgb_overlay_bbox[1]},{rgb_overlay_bbox[2]},{rgb_overlay_bbox[3]}",
+            crop_bbox=f"{rgb_crop_bbox[0]},{rgb_crop_bbox[1]},{rgb_crop_bbox[2]},{rgb_crop_bbox[3]}",
+            crop_margin=rgb_detection_crop_margin_used,
+            crop_mode="full_image" if RGB_DETECTION_CROP_MARGIN < 0 else "thermal_overlay_margin",
+            crop_size=f"{rgb_crop_size[0]}x{rgb_crop_size[1]}",
+            detect_size=f"{rgb_detection_size[0]}x{rgb_detection_size[1]}",
+            resized=rgb_detection_size != rgb_crop_size,
+        )
+
+        try:
+            equipment_predictions = _run_yolo_detection_from_path(
+                EQUIPMENT_MODEL_PATH,
+                False,
+                rgb_detection_path,
+                EQUIPMENT_CONFIDENCE,
+                EQUIPMENT_IOU,
+                EQUIPMENT_IMGSZ,
+            )
+            # เก็บผล detect ดิบไว้ก่อน map bbox กลับภาพ RGB เต็มใบ
+            # ภาพ debug ต้องใช้พิกัดนี้ เพราะเป็นพิกัดเดียวกับภาพที่ส่งเข้า equipment model จริง
+            for equipment_prediction in equipment_predictions:
+                equipment_predictions_for_debug.append(
+                    {
+                        "bbox": list(equipment_prediction["bbox"]),
+                        "class_id": equipment_prediction["class_id"],
+                        "confidence": round(float(equipment_prediction["confidence"]), 4),
+                        "label": _equipment_label_for_class(equipment_prediction["class_id"]),
+                    }
+                )
+            with Image.open(rgb_detection_path) as rgb_debug_source:
+                equipment_detection_debug_image = rgb_debug_source.convert("RGB")
+            if rgb_detection_size is not None and equipment_detection_debug_image is not None:
+                _draw_equipment_model_debug_image(
+                    equipment_detection_debug_image,
+                    equipment_predictions_for_debug,
+                    rgb_detection_size[0],
+                    rgb_detection_size[1],
+                )
+        finally:
+            # ลบไฟล์ detect ชั่วคราวทิ้งหลังใช้
+            if rgb_temp_path is not None and rgb_temp_path.exists():
+                rgb_temp_path.unlink()
+
+        # map bbox ของผล detect บนภาพ cropped/resized กลับไปยังพิกัดภาพ RGB จริง
+        for equipment_prediction in equipment_predictions:
+            equipment_prediction["bbox"] = [
+                float(equipment_prediction["bbox"][0] * rgb_scale_x + rgb_crop_offset_x),
+                float(equipment_prediction["bbox"][1] * rgb_scale_y + rgb_crop_offset_y),
+                float(equipment_prediction["bbox"][2] * rgb_scale_x + rgb_crop_offset_x),
+                float(equipment_prediction["bbox"][3] * rgb_scale_y + rgb_crop_offset_y),
+            ]
+        _log_upload_step(request_id, "rgb_model_done", equipment_count=len(equipment_predictions))
 
     # ------------------------------
     # extract thermal matrix
@@ -2072,6 +2548,8 @@ def _analyze_saved_pair(
     has_absolute_temperature = False
     thermal_height, thermal_width = 0, 0
     reference_temperature = None
+    thermal_image_min_temperature = None
+    thermal_image_max_temperature = None
 
     if thermal_matrix is not None:
         finite_values = thermal_matrix[np.isfinite(thermal_matrix)]
@@ -2090,6 +2568,9 @@ def _analyze_saved_pair(
             thermal_analysis_matrix = thermal_matrix
 
         thermal_height, thermal_width = thermal_analysis_matrix.shape
+        thermal_image_min_temperature, thermal_image_max_temperature = _get_thermal_matrix_temperature_range(
+            thermal_analysis_matrix if has_absolute_temperature else None
+        )
 
     _log_upload_step(
         request_id,
@@ -2156,6 +2637,25 @@ def _analyze_saved_pair(
         }
         equipments.append(equipment)
 
+    # ------------------------------
+    # [เพิ่มใหม่]
+    # บันทึกภาพ debug ก่อน match
+    # 1) hotspot model บน thermal
+    # 2) RGB crop/resize ที่ส่งเข้า equipment model แต่ยังไม่วาดกรอบ equipment
+    # ภาพ RGB จะถูกวาดเฉพาะกรอบ hotspot ที่ project จาก thermal หลังสร้าง detections แล้ว
+    # ------------------------------
+    with Image.open(thermal_uploaded_image_path) as thermal_debug_source:
+        hotspot_detection_debug_image = thermal_debug_source.convert("RGB")
+    _draw_hotspot_model_debug_image(
+        hotspot_detection_debug_image,
+        hotspot_predictions,
+        thermal_image_width,
+        thermal_image_height,
+    )
+
+    if equipment_detection_debug_image is None and rgb_detection_size is not None:
+        equipment_detection_debug_image = Image.new("RGB", (rgb_detection_size[0], rgb_detection_size[1]), "#f4f1ed")
+
     detections = []
 
     # ------------------------------
@@ -2173,24 +2673,33 @@ def _analyze_saved_pair(
             )
         )
 
-        # project กรอบ thermal -> RGB
-        rgb_box = _project_thermal_bbox_to_rgb(
-            thermal_box,
-            thermal_image_width,
-            thermal_image_height,
-            rgb_image_width,
-            rgb_image_height,
-        )
+        if is_thermal_only:
+            # thermal-only ไม่มีภาพ RGB ให้ project ไปหาอุปกรณ์
+            # จึงใช้พิกัด thermal เดิมเป็น bbox/center สำหรับแสดงผล hotspot
+            rgb_box = thermal_box
+            hotspot_center = (
+                (thermal_box[0] + thermal_box[2]) / 2.0,
+                (thermal_box[1] + thermal_box[3]) / 2.0,
+            )
+        else:
+            # project กรอบ thermal -> RGB
+            rgb_box = _project_thermal_bbox_to_rgb(
+                thermal_box,
+                thermal_image_width,
+                thermal_image_height,
+                rgb_image_width,
+                rgb_image_height,
+            )
 
-        # หา center ของ hotspot ในพิกัด RGB
-        hotspot_center = _project_thermal_point_to_rgb(
-            (thermal_box[0] + thermal_box[2]) / 2.0,
-            (thermal_box[1] + thermal_box[3]) / 2.0,
-            thermal_image_width,
-            thermal_image_height,
-            rgb_image_width,
-            rgb_image_height,
-        )
+            # หา center ของ hotspot ในพิกัด RGB
+            hotspot_center = _project_thermal_point_to_rgb(
+                (thermal_box[0] + thermal_box[2]) / 2.0,
+                (thermal_box[1] + thermal_box[3]) / 2.0,
+                thermal_image_width,
+                thermal_image_height,
+                rgb_image_width,
+                rgb_image_height,
+            )
 
         # [แก้สำคัญจากโค้ดเก่า]
         # detection ใหม่มีข้อมูลละเอียดขึ้นมาก
@@ -2311,7 +2820,18 @@ def _analyze_saved_pair(
 
         # [ส่วนจับคู่ hotspot กับอุปกรณ์]
         # match hotspot จุดนี้กับ equipment บน RGB
-        detection.update(_match_equipment(hotspot_center, equipments, rgb_image_width, rgb_image_height))
+        if is_thermal_only:
+            detection.update(
+                {
+                    "equipment_class": "unknown",
+                    "equipment_confidence": None,
+                    "equipment_bbox": None,
+                    "match_method": "unknown",
+                    "match_distance": None,
+                }
+            )
+        else:
+            detection.update(_match_equipment(hotspot_center, equipments, rgb_image_width, rgb_image_height))
         detections.append(detection)
 
     _log_upload_step(request_id, "matching_done", detection_count=len(detections))
@@ -2325,6 +2845,18 @@ def _analyze_saved_pair(
     annotated_image_path = UPLOAD_DIR / annotated_image_filename
     annotated_image_camera.save(annotated_image_path, format="JPEG", quality=90)
     annotated_image_camera.close()
+
+    hotspot_detection_debug_filename = f"{file_id}_hotspot_detection_debug.jpg"
+    hotspot_detection_debug_path = UPLOAD_DIR / hotspot_detection_debug_filename
+    hotspot_detection_debug_image.save(hotspot_detection_debug_path, format="JPEG", quality=90)
+    hotspot_detection_debug_image.close()
+
+    equipment_detection_debug_filename = None
+    if equipment_detection_debug_image is not None:
+        equipment_detection_debug_filename = f"{file_id}_equipment_detection_debug.jpg"
+        equipment_detection_debug_path = UPLOAD_DIR / equipment_detection_debug_filename
+        equipment_detection_debug_image.save(equipment_detection_debug_path, format="JPEG", quality=90)
+        equipment_detection_debug_image.close()
 
     # บันทึกภาพ fixed-range เพิ่ม 2 แบบ
     # 1) annotated_image_fixed_range = มีกรอบ hotspot และข้อความเหมือนภาพหลัก
@@ -2349,26 +2881,38 @@ def _analyze_saved_pair(
         "annotated_image_saved",
         annotated_path=annotated_image_filename,
         annotated_fixed_range_path=annotated_image_fixed_range_filename,
+        hotspot_debug_path=hotspot_detection_debug_filename,
+        equipment_debug_path=equipment_detection_debug_filename,
     )
 
     response = {
         "success": True,
         "file_id": file_id,
+        "analysis_mode": analysis_mode,
         "uploaded_image": f"/uploads/{thermal_uploaded_image_filename}",
-        "uploaded_rgb_image": f"/uploads/{rgb_uploaded_image_filename}",
+        "uploaded_rgb_image": f"/uploads/{rgb_uploaded_image_filename}" if rgb_uploaded_image_filename else None,
         "annotated_image": f"/uploads/{annotated_image_filename}",
         "annotated_image_camera": f"/uploads/{annotated_image_filename}",
+        "hotspot_detection_image": f"/uploads/{hotspot_detection_debug_filename}",
+        "equipment_detection_image": f"/uploads/{equipment_detection_debug_filename}" if equipment_detection_debug_filename else None,
         "annotated_image_fixed_range": (
             f"/uploads/{annotated_image_fixed_range_filename}" if annotated_image_fixed_range_filename else None
         ),
         "fixed_range_image": f"/uploads/{fixed_range_image_filename}" if fixed_range_image_filename else None,
         "detections": detections,
+        "rgb_detection_crop_margin": rgb_detection_crop_margin_used,
+        "rgb_detection_crop_bbox": list(rgb_crop_bbox) if rgb_crop_bbox is not None else None,
+        "rgb_detection_size": list(rgb_detection_size) if rgb_detection_size is not None else None,
         "has_gps": has_gps,
         "message": None,
         "thermal_available": has_absolute_temperature,
         "thermal_mode": thermal_mode,
         "thermal_error": thermal_error,
         "reference_temperature": reference_temperature,
+        "thermal_image_min_temperature": thermal_image_min_temperature,
+        "thermal_image_max_temperature": thermal_image_max_temperature,
+        "fixed_range_min_temperature": DISPLAY_TEMP_MIN_C if annotated_image_fixed_range_filename else None,
+        "fixed_range_max_temperature": DISPLAY_TEMP_MAX_C if annotated_image_fixed_range_filename else None,
         "request_id": request_id,
     }
 
@@ -2487,6 +3031,137 @@ async def apply_reference_roi(request: Request):
         "roi": normalized_roi,
         "detections": recalculated_detections,
         "thermal_image": f"/uploads/{thermal_uploaded_image_filename}",
+    }
+
+
+# ------------------------------
+# [เพิ่มใหม่]
+# endpoint สำหรับ render ภาพ thermal ด้วย display range ที่ผู้ใช้เลือกเอง
+#
+# จุดสำคัญ:
+# - ไม่ rerun model
+# - ใช้ไฟล์ thermal เดิมจาก file_id
+# - ใช้ detections เดิมเพื่อวาด hotspot ซ้ำบนภาพ range ใหม่
+# ------------------------------
+@app.post("/display-range")
+async def apply_display_range(request: Request):
+    request_id = getattr(request.state, "request_id", uuid.uuid4().hex[:8])
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return _json_error("Display range request must be valid JSON.", request_id, 400)
+
+    if not isinstance(payload, dict):
+        return _json_error("Display range request payload must be an object.", request_id, 400)
+
+    file_id = str(payload.get("file_id") or "").strip()
+    if not file_id:
+        return _json_error("Display range request requires file_id.", request_id, 400)
+
+    try:
+        display_min_c = float(payload.get("min_temp"))
+        display_max_c = float(payload.get("max_temp"))
+    except (TypeError, ValueError):
+        return _json_error("Display range min_temp and max_temp must be numbers.", request_id, 400, file_id=file_id)
+
+    if not np.isfinite(display_min_c) or not np.isfinite(display_max_c):
+        return _json_error("Display range min_temp and max_temp must be finite.", request_id, 400, file_id=file_id)
+    if display_max_c <= display_min_c:
+        return _json_error("Display range max_temp must be greater than min_temp.", request_id, 400, file_id=file_id)
+
+    raw_detections = payload.get("detections")
+    if not isinstance(raw_detections, list):
+        return _json_error("Display range request requires detections.", request_id, 400, file_id=file_id)
+
+    detections: list[dict[str, Any]] = []
+    for detection in raw_detections:
+        if not isinstance(detection, dict):
+            return _json_error("Each detection in the display range request must be an object.", request_id, 400, file_id=file_id)
+        detections.append(dict(detection))
+
+    thermal_file = _find_uploaded_file(file_id, "thermal")
+    if thermal_file is None:
+        return _json_error("Thermal upload not found for the requested file_id.", request_id, 404, file_id=file_id)
+
+    thermal_uploaded_image_filename, thermal_uploaded_image_path = thermal_file
+
+    with Image.open(thermal_uploaded_image_path) as thermal_source_image:
+        thermal_image_width, thermal_image_height = thermal_source_image.size
+
+    thermal_matrix, thermal_error, thermal_mode = extract_thermal_matrix(
+        str(thermal_uploaded_image_path),
+        expected_width=thermal_image_width,
+        expected_height=thermal_image_height,
+    )
+
+    if thermal_matrix is None or thermal_mode != "absolute":
+        return _json_error(
+            thermal_error or "Custom display range requires absolute thermal temperature data.",
+            request_id,
+            400,
+            file_id=file_id,
+        )
+
+    finite_values = thermal_matrix[np.isfinite(thermal_matrix)]
+    if finite_values.size > 0 and float(finite_values.max()) > 1000.0:
+        thermal_analysis_matrix = thermal_matrix * 0.04 - 273.15
+    else:
+        thermal_analysis_matrix = thermal_matrix
+
+    rendered_image = _render_fixed_range_thermal_image(
+        thermal_analysis_matrix,
+        thermal_image_width,
+        thermal_image_height,
+        display_min_c=display_min_c,
+        display_max_c=display_max_c,
+    )
+    if rendered_image is None:
+        return _json_error("Display range image could not be rendered.", request_id, 400, file_id=file_id)
+
+    thermal_image_min_temperature, thermal_image_max_temperature = _get_thermal_matrix_temperature_range(
+        thermal_analysis_matrix
+    )
+    fixed_range_image_plain = rendered_image.copy()
+    _draw_detection_annotations_on_thermal(
+        rendered_image,
+        detections,
+        thermal_image_width,
+        thermal_image_height,
+    )
+
+    range_label = f"{display_min_c:.2f}_{display_max_c:.2f}".replace("-", "m").replace(".", "p")
+    annotated_image_fixed_range_filename = f"{file_id}_range_{range_label}_{request_id}_annotated.jpg"
+    fixed_range_image_filename = f"{file_id}_range_{range_label}_{request_id}.jpg"
+    annotated_image_fixed_range_path = UPLOAD_DIR / annotated_image_fixed_range_filename
+    fixed_range_image_path = UPLOAD_DIR / fixed_range_image_filename
+
+    rendered_image.save(annotated_image_fixed_range_path, format="JPEG", quality=90)
+    rendered_image.close()
+    fixed_range_image_plain.save(fixed_range_image_path, format="JPEG", quality=90)
+    fixed_range_image_plain.close()
+    gc.collect()
+
+    _log_readable_event(
+        request_id,
+        "🎚️",
+        "display_range_rendered",
+        file_id=file_id,
+        min_temp=round(display_min_c, 2),
+        max_temp=round(display_max_c, 2),
+        annotated_path=annotated_image_fixed_range_filename,
+    )
+
+    return {
+        "success": True,
+        "file_id": file_id,
+        "request_id": request_id,
+        "annotated_image_fixed_range": f"/uploads/{annotated_image_fixed_range_filename}",
+        "fixed_range_image": f"/uploads/{fixed_range_image_filename}",
+        "fixed_range_min_temperature": display_min_c,
+        "fixed_range_max_temperature": display_max_c,
+        "thermal_image_min_temperature": thermal_image_min_temperature,
+        "thermal_image_max_temperature": thermal_image_max_temperature,
     }
 
 
@@ -2720,7 +3395,11 @@ async def analyze_uploaded_pair(request: Request):
     if not file_id:
         return _json_error("Analyze request requires file_id.", request_id, 400)
 
-    if not EQUIPMENT_MODEL_PATH.exists():
+    analysis_mode = str(payload.get("analysis_mode") or "paired").strip().lower()
+    if analysis_mode not in {"paired", "thermal_only"}:
+        return _json_error("analysis_mode must be 'paired' or 'thermal_only'.", request_id, 400, file_id=file_id)
+
+    if analysis_mode == "paired" and not EQUIPMENT_MODEL_PATH.exists():
         return _json_error(
             f"Equipment model not found at {EQUIPMENT_MODEL_PATH}. Set EQUIPMENT_MODEL_PATH first.",
             request_id,
@@ -2732,19 +3411,20 @@ async def analyze_uploaded_pair(request: Request):
 
     if thermal_file is None:
         return _json_error("Thermal upload not found for the requested file_id.", request_id, 404, file_id=file_id)
-    if rgb_file is None:
+    if analysis_mode == "paired" and rgb_file is None:
         return _json_error("RGB upload not found for the requested file_id.", request_id, 404, file_id=file_id)
 
     thermal_uploaded_image_filename, thermal_uploaded_image_path = thermal_file
-    rgb_uploaded_image_filename, rgb_uploaded_image_path = rgb_file
+    rgb_uploaded_image_filename, rgb_uploaded_image_path = rgb_file if rgb_file is not None else (None, None)
     thermal_log_name = thermal_original_name or thermal_uploaded_image_filename
-    rgb_log_name = rgb_original_name or rgb_uploaded_image_filename
+    rgb_log_name = rgb_original_name or rgb_uploaded_image_filename or ""
 
     _log_readable_event(
         request_id,
         "🔎",
         "analyze_pair_started",
         file_id=file_id,
+        analysis_mode=analysis_mode,
         thermal_file=thermal_log_name,
         rgb_file=rgb_log_name,
         **batch_details,
@@ -2753,6 +3433,7 @@ async def analyze_uploaded_pair(request: Request):
         request_id,
         "analyze_started",
         file_id=file_id,
+        analysis_mode=analysis_mode,
         thermal_path=thermal_uploaded_image_filename,
         rgb_path=rgb_uploaded_image_filename,
         thermal_file=thermal_log_name,
@@ -2769,6 +3450,7 @@ async def analyze_uploaded_pair(request: Request):
             thermal_uploaded_image_path=thermal_uploaded_image_path,
             rgb_uploaded_image_filename=rgb_uploaded_image_filename,
             rgb_uploaded_image_path=rgb_uploaded_image_path,
+            analysis_mode=analysis_mode,
         )
         elapsed_seconds = round(time.perf_counter() - started_at, 2)
         _log_readable_event(
@@ -2776,6 +3458,7 @@ async def analyze_uploaded_pair(request: Request):
             "✅",
             "analyze_pair_finished",
             file_id=file_id,
+            analysis_mode=analysis_mode,
             thermal_file=thermal_log_name,
             rgb_file=rgb_log_name,
             elapsed_seconds=elapsed_seconds,
@@ -2789,6 +3472,7 @@ async def analyze_uploaded_pair(request: Request):
             "❌",
             "analyze_pair_failed",
             file_id=file_id,
+            analysis_mode=analysis_mode,
             thermal_file=thermal_log_name,
             rgb_file=rgb_log_name,
             elapsed_seconds=elapsed_seconds,
@@ -2798,7 +3482,7 @@ async def analyze_uploaded_pair(request: Request):
         request_progress[request_id]["failed"] = True
         logger.exception("[%s] analyze_failed file_id=%s elapsed_seconds=%s", request_id, file_id, elapsed_seconds)
         return _json_error(
-            "Backend failed while analyzing the uploaded image pair.",
+            "Backend failed while analyzing the uploaded image.",
             request_id,
             500,
             file_id=file_id,
